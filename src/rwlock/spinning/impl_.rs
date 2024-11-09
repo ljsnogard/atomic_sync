@@ -21,7 +21,6 @@ use abs_sync::{
     cancellation::TrCancellationToken,
     sync_lock::{self, TrSyncRwLock},
     sync_tasks::TrSyncTask,
-    x_deps::atomex,
 };
 
 use super::{

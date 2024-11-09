@@ -13,7 +13,6 @@ use abs_sync::{
     cancellation::TrCancellationToken,
     sync_lock::{self, TrAcquire},
     sync_tasks::TrSyncTask,
-    x_deps::atomex
 };
 
 use super::{
@@ -56,7 +55,7 @@ where
     }
 }
 
-impl<'a, 'g, T, B, D, O> Drop for WriterGuard<'a, 'g, T, B, D, O>
+impl<'a, T, B, D, O> Drop for WriterGuard<'a, '_, T, B, D, O>
 where
     T: 'a + ?Sized,
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
@@ -83,7 +82,7 @@ where
     }
 }
 
-impl<'a, 'g, T, B, D, O> Deref for WriterGuard<'a, 'g, T, B, D, O>
+impl<'a, T, B, D, O> Deref for WriterGuard<'a, '_, T, B, D, O>
 where
     T: 'a + ?Sized,
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
@@ -98,7 +97,7 @@ where
     }
 }
 
-impl<'a, 'g, T, B, D, O> DerefMut for WriterGuard<'a, 'g, T, B, D, O>
+impl<'a, T, B, D, O> DerefMut for WriterGuard<'a, '_, T, B, D, O>
 where
     T: 'a + ?Sized,
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,

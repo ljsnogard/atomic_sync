@@ -12,5 +12,7 @@ pub mod rwlock;
 
 pub mod x_deps {
     pub use abs_sync;
-    pub use abs_sync::x_deps::{atomex, pin_utils};
+    pub use abs_sync::x_deps::pin_utils;
+
+    pub use atomex;
 }

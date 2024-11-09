@@ -13,7 +13,6 @@ use abs_sync::{
     cancellation::TrCancellationToken,
     sync_lock,
     sync_tasks::TrSyncTask,
-    x_deps::atomex,
 };
 
 use super::impl_::{Acquire, may_cancel_with_impl_};
@@ -40,7 +39,7 @@ where
     }
 }
 
-impl<'a, 'g, T, B, D, O> Deref for ReaderGuard<'a, 'g, T, B, D, O>
+impl<'a, T, B, D, O> Deref for ReaderGuard<'a, '_, T, B, D, O>
 where
     T: 'a + ?Sized,
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
@@ -67,7 +66,7 @@ where
     type Acquire = Acquire<'a, T, B, D, O>;
 }
 
-impl<'a, 'g, T, B, D, O> Drop for ReaderGuard<'a, 'g, T, B, D, O>
+impl<'a, T, B, D, O> Drop for ReaderGuard<'a, '_, T, B, D, O>
 where
     T: 'a + ?Sized,
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,

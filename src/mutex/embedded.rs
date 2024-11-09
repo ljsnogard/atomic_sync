@@ -18,7 +18,6 @@ use abs_sync::{
     cancellation::TrCancellationToken,
     sync_lock::{TrMutexGuard, TrSyncMutex},
     sync_tasks::TrSyncTask,
-    x_deps::atomex,
 };
 
 /// An helper trait to define spinlock behaviour
@@ -356,7 +355,7 @@ where
     }
 }
 
-impl<'a, T, D, B, S, O> Drop for MutexGuard<'a, T, D, B, S, O>
+impl<T, D, B, S, O> Drop for MutexGuard<'_, T, D, B, S, O>
 where
     T: ?Sized,
     D: TrAtomicData + Copy,
@@ -369,7 +368,7 @@ where
     }
 }
 
-impl<'a, T, D, B, S, O> Deref for MutexGuard<'a, T, D, B, S, O>
+impl<T, D, B, S, O> Deref for MutexGuard<'_, T, D, B, S, O>
 where
     T: ?Sized,
     D: TrAtomicData + Copy,
@@ -388,7 +387,7 @@ where
     }
 }
 
-impl<'a, T, D, B, S, O> DerefMut for MutexGuard<'a, T, D, B, S, O>
+impl<T, D, B, S, O> DerefMut for MutexGuard<'_, T, D, B, S, O>
 where
     T: ?Sized,
     D: TrAtomicData + Copy,
@@ -416,7 +415,7 @@ where
     type Mutex = SpinningMutex<T, D, B, S, O>;
 }
 
-unsafe impl<'a, T, D, B, S, O> Sync for MutexGuard<'a, T, D, B, S, O>
+unsafe impl<T, D, B, S, O> Sync for MutexGuard<'_, T, D, B, S, O>
 where
     T: ?Sized,
     D: TrAtomicData + Copy,

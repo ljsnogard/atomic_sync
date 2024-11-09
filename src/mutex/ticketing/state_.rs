@@ -12,10 +12,7 @@ use atomex::{
     Bitwise, CmpxchResult,
     TrAtomicCell, TrAtomicData, TrAtomicFlags, TrCmpxchOrderings,
 };
-use abs_sync::{
-    cancellation::TrCancellationToken,
-    x_deps::atomex,
-};
+use abs_sync::cancellation::TrCancellationToken;
 
 pub(super) struct MutexState<D, B, O>
 where
@@ -598,7 +595,7 @@ where
     }
 }
 
-impl<'a, 'b, C, D, B, O> Debug for TicketCtx<'a, 'b, C, D, B, O>
+impl<'b, C, D, B, O> Debug for TicketCtx<'_, 'b, C, D, B, O>
 where
     C: 'b + TrCancellationToken,
     D: TrAtomicData + Unsigned,

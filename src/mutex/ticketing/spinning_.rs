@@ -16,7 +16,6 @@ use abs_sync::{
     cancellation::{CancelledToken, TrCancellationToken},
     sync_lock::{TrMutexGuard, TrSyncMutex},
     sync_tasks::TrSyncTask,
-    x_deps::atomex,
 };
 use super::state_::{MutexState, TicketCtx};
 
@@ -292,7 +291,7 @@ where
     }
 }
 
-impl<'a, T, D, B, O> Drop for MutexGuard<'a, T, D, B, O>
+impl<T, D, B, O> Drop for MutexGuard<'_, T, D, B, O>
 where
     T: ?Sized,
     D: TrAtomicData + Unsigned,
@@ -309,7 +308,7 @@ where
     }
 }
 
-impl<'a, T, D, B, O> Deref for MutexGuard<'a, T, D, B, O>
+impl<T, D, B, O> Deref for MutexGuard<'_, T, D, B, O>
 where
     T: ?Sized,
     D: TrAtomicData + Unsigned,
@@ -328,7 +327,7 @@ where
     }
 }
 
-impl<'a, T, D, B, O> DerefMut for MutexGuard<'a, T, D, B, O>
+impl<T, D, B, O> DerefMut for MutexGuard<'_, T, D, B, O>
 where
     T: ?Sized,
     D: TrAtomicData + Unsigned,
