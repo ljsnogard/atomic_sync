@@ -12,7 +12,7 @@ license = "MIT/Apache-2.0"
 readme = "README.md"
 
 [dependencies]
-abs_sync = { git = "https://github.com/ljsnogard/abs_sync", tag = "0.1.1" }
+abs_sync = { git = "https://github.com/ljsnogard/abs_sync", branch = "dev/0.1.2" }
 atomex = { git = "https://github.com/ljsnogard/atomex-rs", tag = "0.1.0" }
 
 [dev-dependencies]
