@@ -15,7 +15,10 @@ use abs_sync::{
     sync_tasks::TrSyncTask,
 };
 
-use super::impl_::{Acquire, may_cancel_with_impl_};
+use super::{
+    acquire_::Acquire,
+    rwlock_::SpinningRwLock,
+};
 
 #[derive(Debug)]
 pub struct ReaderGuard<'a, 'g, T, B, D, O>(Pin<&'g mut Acquire<'a, T, B, D, O>>)
@@ -75,7 +78,7 @@ where
     O: TrCmpxchOrderings,
 {
     fn drop(&mut self) {
-        self.0.as_mut().drop_reader_guard()
+        todo!()
     }
 }
 
@@ -107,16 +110,11 @@ where
     where
         C: TrCancellationToken,
     {
-        may_cancel_with_impl_(
-            self,
-            |t| t.0.as_mut(),
-            Acquire::try_read,
-            cancel,
-        )
+        todo!()
     }
 
     #[inline(always)]
-    pub fn wait(self) -> <Self as TrSyncTask>::Output {
+    pub fn wait(self) -> <Self as TrSyncTask>::MayCancelOutput {
         TrSyncTask::wait(self)
     }
 }
@@ -129,13 +127,13 @@ where
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
-    type Output = ReaderGuard<'a, 'g, T, B, D, O>;
+    type MayCancelOutput = ReaderGuard<'a, 'g, T, B, D, O>;
 
     #[inline(always)]
     fn may_cancel_with<C>(
         self,
         cancel: Pin<&mut C>,
-    ) -> impl Try<Output = Self::Output>
+    ) -> impl Try<Output = Self::MayCancelOutput>
     where
         C: TrCancellationToken,
     {

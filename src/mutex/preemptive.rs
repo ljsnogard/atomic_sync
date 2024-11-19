@@ -16,8 +16,8 @@ use atomex::{
 };
 use abs_sync::{
     cancellation::TrCancellationToken,
-    sync_lock::{TrMutexGuard, TrSyncMutex},
-    sync_tasks::TrSyncTask,
+    sync_mutex::{self, TrMutexGuard, TrSyncMutex},
+    sync_tasks::TrSyncTask
 };
 
 /// An helper trait to define spinlock behaviour
@@ -80,7 +80,7 @@ impl<T: Sized> TrMutexSignal<*mut T> for PtrAsMutexSignal<T> {
     }
 }
 
-pub type SpinningMutexBorrowed<
+pub type SpinningMutexEmbedded<
         'a,
         T,
         C = AtomicUsize,
@@ -94,6 +94,19 @@ pub type SpinningMutexOwned<
         S = MsbAsMutexSignal<<C as TrAtomicCell>::Value>,
         O = StrictOrderings,
     > = SpinningMutex<T, <C as TrAtomicCell>::Value, C, S, O>;
+
+impl<'a, T, C, S, O> SpinningMutexEmbedded<'a, T, C, S, O>
+where
+    C: TrAtomicCell<Value: TrAtomicData<AtomicCell = C> + Copy + Default>,
+    S: TrMutexSignal<<C as TrAtomicCell>::Value>,
+    O: TrCmpxchOrderings,
+{
+    pub fn new_embedded(data: T, cell: &'a mut C) -> Self {
+        let val = <<C as TrAtomicCell>::Value as Default>::default();
+        cell.store(val, Ordering::Relaxed);
+        SpinningMutexEmbedded::<T, C, S, O>::new(data, cell)
+    }
+}
 
 impl<T, C, S, O> SpinningMutexOwned<T, C, S, O>
 where
@@ -160,59 +173,17 @@ where
     S: TrMutexSignal<D>,
     O: TrCmpxchOrderings,
 {
-    pub fn acquire(&self) -> AcquireTask<'_, T, D, B, S, O> {
-        AcquireTask(self)
-    }
-
     pub fn is_acquired(&self) -> bool {
         let state = TrAtomicFlags::value(self);
         S::is_acquired(state)
     }
 
-    pub fn try_acquire(&self) -> Option<MutexGuard<'_, T, D, B, S, O>> {
-        self.try_once_compare_exchange_weak(
-                TrAtomicFlags::value(self),
-                S::is_released,
-                S::make_acquired)
-            .succ()
-            .map(|_| MutexGuard::new(self))
+    pub fn acquire(&self) -> Acquire<'_, T, D, B, S, O> {
+        Acquire(self)
     }
 
     pub fn as_mut_ptr(&self) -> *mut T {
         self.value_.get()
-    }
-
-    fn try_spin_acquire_<C>(
-        &self,
-        cancel: Pin<&mut C>,
-    ) -> Option<MutexGuard<'_, T, D, B, S, O>>
-    where
-        C: TrCancellationToken,
-    {
-        let mut current = self.value();
-        loop {
-            match self.try_once_compare_exchange_weak(
-                current,
-                S::is_released,
-                S::make_acquired,
-            ) {
-                CmpxchResult::Succ(_) =>
-                    break Option::Some(MutexGuard::new(self)),
-                CmpxchResult::Fail(x) =>
-                    current = x,
-                CmpxchResult::Unexpected(_) => (),
-            }
-            if cancel.is_cancelled() {
-                break Option::None
-            }
-        }
-    }
-
-    fn try_spin_release_(&self) -> bool {
-        self.try_spin_compare_exchange_weak(
-                S::is_acquired,
-                S::make_released)
-            .is_succ()
     }
 }
 
@@ -247,18 +218,10 @@ where
     O: TrCmpxchOrderings,
 {
     type Target = T;
-    type MutexGuard<'a> = MutexGuard<'a, T, D, B, S, O> where Self: 'a;
 
-    fn acquire(&self) -> impl TrSyncTask<Output = Self::MutexGuard<'_>> {
+    #[inline]
+    fn acquire(&self) -> impl sync_mutex::TrAcquire<'_, Self::Target> {
         SpinningMutex::acquire(self)
-    }
-
-    fn is_acquired(&self) -> bool {
-        SpinningMutex::is_acquired(self)
-    }
-
-    fn try_acquire(&self) -> Option<Self::MutexGuard<'_>> {
-        SpinningMutex::try_acquire(self)
     }
 }
 
@@ -280,7 +243,7 @@ where
     O: TrCmpxchOrderings,
 {}
 
-pub struct AcquireTask<'a, T, D, B, S, O>(&'a SpinningMutex<T, D, B, S, O>)
+pub struct Acquire<'a, T, D, B, S, O>(&'a SpinningMutex<T, D, B, S, O>)
 where
     T: ?Sized,
     D: TrAtomicData + Copy,
@@ -288,8 +251,114 @@ where
     S: TrMutexSignal<D>,
     O: TrCmpxchOrderings;
 
-impl<'a, T, D, B, S, O> AcquireTask<'a, T, D, B, S, O>
+impl<'a, T, D, B, S, O> Acquire<'a, T, D, B, S, O>
 where
+    T: ?Sized,
+    D: TrAtomicData + Copy,
+    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
+    S: TrMutexSignal<D>,
+    O: TrCmpxchOrderings,
+{
+    pub fn lock(self: Pin<&mut Self>) -> LockAcqTask<'a, '_, T, D, B, S, O> {
+        LockAcqTask(self)
+    }
+
+    pub fn try_lock<'g>(
+        self: Pin<&'g mut Self>,
+    ) -> Option<MutexGuard<'a, 'g, T, D, B, S, O>> {
+        self.0
+            .try_once_compare_exchange_weak(
+                self.0.value(),
+                S::is_released,
+                S::make_acquired)
+            .succ()
+            .map(|_| MutexGuard::new(self))
+    }
+
+    fn mutex_(&self) -> &'a SpinningMutex<T, D, B, S, O> {
+        self.0
+    }
+
+    fn try_spin_acquire_<'g, 'c, C>(
+        self: Pin<&'g mut Self>,
+        cancel: Pin<&'c mut C>,
+    ) -> Option<MutexGuard<'a, 'g, T, D, B, S, O>>
+    where
+        'g: 'c,
+        C: TrCancellationToken,
+    {
+        let mut current = self.0.value();
+        loop {
+            match self.mutex_().try_once_compare_exchange_weak(
+                current,
+                S::is_released,
+                S::make_acquired,
+            ) {
+                CmpxchResult::Succ(_) =>
+                    break Option::Some(MutexGuard::new(self)),
+                CmpxchResult::Fail(x) =>
+                    current = x,
+                CmpxchResult::Unexpected(_) => (),
+            }
+            if cancel.is_cancelled() {
+                break Option::None
+            }
+        }
+    }
+
+    fn try_spin_release_(&self) -> bool {
+        self.0
+            .try_spin_compare_exchange_weak(
+                S::is_acquired,
+                S::make_released)
+            .is_succ()
+    }
+}
+
+impl<'a, T, D, B, S, O> sync_mutex::TrAcquire<'a, T>
+for Acquire<'a, T, D, B, S, O>
+where
+    T: ?Sized,
+    D: TrAtomicData + Copy,
+    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
+    S: TrMutexSignal<D>,
+    O: TrCmpxchOrderings,
+{
+    type MutexGuard<'g> = MutexGuard<'a, 'g, T, D, B, S, O> where 'a: 'g;
+
+    #[inline]
+    fn try_lock<'g>(
+        self: Pin<&'g mut Self>,
+    ) -> impl Try<Output = Self::MutexGuard<'g>>
+    where
+        'a: 'g
+    {
+        Acquire::try_lock(self)
+    }
+
+    #[inline]
+    fn lock<'g>(
+        self: Pin<&'g mut Self>,
+    ) -> impl TrSyncTask<MayCancelOutput = Self::MutexGuard<'g>>
+    where
+        'a: 'g
+    {
+        Acquire::lock(self)
+    }
+}
+
+pub struct LockAcqTask<'a, 'g, T, D, B, S, O>(Pin<&'g mut Acquire<'a, T, D, B, S, O>>)
+where
+    'a: 'g,
+    T: ?Sized,
+    D: TrAtomicData + Copy,
+    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
+    S: TrMutexSignal<D>,
+    O: TrCmpxchOrderings;
+
+impl<'a, 'g, T, D, B, S, O> LockAcqTask<'a, 'g, T, D, B, S, O>
+where
+    'a: 'g,
     T: ?Sized,
     D: TrAtomicData + Copy,
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
@@ -299,64 +368,70 @@ where
     pub fn may_cancel_with<C>(
         self,
         cancel: Pin<&mut C>,
-    ) -> Option<MutexGuard<'a, T, D, B, S, O>>
+    ) -> Option<MutexGuard<'a, 'g, T, D, B, S, O>>
     where
         C: TrCancellationToken,
     {
         self.0.try_spin_acquire_(cancel)
     }
 
-    #[inline(always)]
-    pub fn wait(self) -> MutexGuard<'a, T, D, B, S, O> {
+    #[inline]
+    pub fn wait(self) -> MutexGuard<'a, 'g, T, D, B, S, O> {
         TrSyncTask::wait(self)
     }
 }
 
-impl<'a, T, D, B, S, O> TrSyncTask for AcquireTask<'a, T, D, B, S, O>
+impl<'a, 'g, T, D, B, S, O> TrSyncTask for LockAcqTask<'a, 'g, T, D, B, S, O>
 where
+    'a: 'g,
     T: ?Sized,
     D: TrAtomicData + Copy,
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     S: TrMutexSignal<D>,
     O: TrCmpxchOrderings,
 {
-    type Output = MutexGuard<'a, T, D, B, S, O>;
+    type MayCancelOutput = MutexGuard<'a, 'g, T, D, B, S, O>;
 
-    #[inline(always)]
+    #[inline]
     fn may_cancel_with<C>(
         self,
         cancel: Pin<&mut C>,
-    ) -> impl Try<Output = Self::Output>
+    ) -> impl Try<Output = Self::MayCancelOutput>
     where
         C: TrCancellationToken,
     {
-        AcquireTask::may_cancel_with(self, cancel)
+        LockAcqTask::may_cancel_with(self, cancel)
     }
 }
 
-pub struct MutexGuard<'a, T, D, B, S, O>(&'a SpinningMutex<T, D, B, S, O>)
+pub struct MutexGuard<'a, 'g, T, D, B, S, O>(Pin<&'g mut Acquire<'a, T, D, B, S, O>>)
 where
+    'a: 'g,
     T: ?Sized,
     D: TrAtomicData + Copy,
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     S: TrMutexSignal<D>,
     O: TrCmpxchOrderings;
 
-impl<'a, T, D, B, S, O> MutexGuard<'a, T, D, B, S, O>
+impl<'a, 'g, T, D, B, S, O> MutexGuard<'a, 'g, T, D, B, S, O>
 where
+    'a: 'g,
     T: ?Sized,
     D: TrAtomicData + Copy,
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     S: TrMutexSignal<D>,
     O: TrCmpxchOrderings,
 {
-    pub(super) fn new(mutex: &'a SpinningMutex<T, D, B, S, O>) -> Self {
-        MutexGuard(mutex)
+    pub(super) fn new(
+        acquire: Pin<&'g mut Acquire<'a, T, D, B, S, O>>,
+    ) -> Self {
+        MutexGuard(acquire)
     }
 }
 
-impl<T, D, B, S, O> Drop for MutexGuard<'_, T, D, B, S, O>
+impl<'a, 'g, T, D, B, S, O> Drop for MutexGuard<'a, 'g, T, D, B, S, O>
 where
+    'a: 'g,
     T: ?Sized,
     D: TrAtomicData + Copy,
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
@@ -368,8 +443,9 @@ where
     }
 }
 
-impl<T, D, B, S, O> Deref for MutexGuard<'_, T, D, B, S, O>
+impl<'a, 'g, T, D, B, S, O> Deref for MutexGuard<'a, 'g, T, D, B, S, O>
 where
+    'a: 'g,
     T: ?Sized,
     D: TrAtomicData + Copy,
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
@@ -379,7 +455,7 @@ where
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        let opt = unsafe { self.0.value_.get().as_ref() };
+        let opt = unsafe { self.0.mutex_().value_.get().as_ref() };
         let Option::Some(t) = opt else {
             unreachable!("[embedded::MutexGuard::deref]")
         };
@@ -387,8 +463,9 @@ where
     }
 }
 
-impl<T, D, B, S, O> DerefMut for MutexGuard<'_, T, D, B, S, O>
+impl<'a, 'g, T, D, B, S, O> DerefMut for MutexGuard<'a, 'g, T, D, B, S, O>
 where
+    'a: 'g,
     T: ?Sized,
     D: TrAtomicData + Copy,
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
@@ -396,7 +473,7 @@ where
     O: TrCmpxchOrderings,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        let opt = unsafe { self.0.value_.get().as_mut() };
+        let opt = unsafe { self.0.mutex_().value_.get().as_mut() };
         let Option::Some(t) = opt else {
             unreachable!("[embedded::MutexGuard::deref_mut]")
         };
@@ -404,19 +481,20 @@ where
     }
 }
 
-impl<'a, T, D, B, S, O> TrMutexGuard<'a, T> for MutexGuard<'a, T, D, B, S, O>
+impl<'a, 'g, T, D, B, S, O> TrMutexGuard<'a, 'g, T>
+for MutexGuard<'a, 'g, T, D, B, S, O>
 where
+    'a: 'g,
     T: ?Sized,
     D: TrAtomicData + Copy,
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     S: TrMutexSignal<D>,
     O: TrCmpxchOrderings,
-{
-    type Mutex = SpinningMutex<T, D, B, S, O>;
-}
+{}
 
-unsafe impl<T, D, B, S, O> Sync for MutexGuard<'_, T, D, B, S, O>
+unsafe impl<'a, 'g, T, D, B, S, O> Sync for MutexGuard<'a, 'g, T, D, B, S, O>
 where
+    'a: 'g,
     T: ?Sized,
     D: TrAtomicData + Copy,
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
@@ -434,11 +512,13 @@ mod tests_ {
         sync::Arc,
         sync::atomic::{AtomicUsize, AtomicPtr, Ordering},
     };
+    use pin_utils::pin_mut;
     use atomex::{LocksOrderings, StrictOrderings};
-
     use crate::{mutex::smoke_tests_, x_deps::atomex};
-
-    use super::{MsbAsMutexSignal, PtrAsMutexSignal, SpinningMutexBorrowed, SpinningMutexOwned};
+    use super::{
+        MsbAsMutexSignal, PtrAsMutexSignal,
+        SpinningMutexEmbedded, SpinningMutexOwned,
+    };
 
     #[test]
     fn usize_smoke_test() {
@@ -487,11 +567,13 @@ mod tests_ {
         let mut cell = Box::new(AtomicPtr::new(PTR_SIZE as *mut usize));
         let ptr = cell.load(Ordering::Relaxed);
         let mut data = Box::new(ANSWER);
-        let lock = SpinningMutexBorrowed
+        let lock = SpinningMutexEmbedded
             ::<&mut usize, AtomicPtr<usize>, PtrAsMutexSignal<usize>, StrictOrderings>
             ::new(&mut data, &mut cell);
 
-        let g = lock.acquire().wait();
+        let acq = lock.acquire();
+        pin_mut!(acq);
+        let g = acq.as_mut().lock().wait();
         assert_eq!(**g, ANSWER);
         drop(g);
         assert!(ptr::eq(ptr, cell.load(Ordering::Relaxed)))
