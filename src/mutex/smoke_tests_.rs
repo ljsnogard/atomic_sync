@@ -7,9 +7,12 @@
 
 use abs_sync::{
     cancellation as mod_can,
-    sync_lock::TrSyncMutex,
+    sync_mutex::{TrAcquire, TrSyncMutex},
     sync_tasks::TrSyncTask,
 };
+
+use pin_utils::pin_mut;
+use crate::x_deps::pin_utils;
 
 fn init_env_logger_() {
     let _ = env_logger::builder().is_test(true).try_init();
@@ -26,13 +29,15 @@ where
     const SECRET: usize = 58;
 
     let mutex = new_mutex(ANSWER);
+    let acquire = mutex.acquire();
+    pin_mut!(acquire);
     unsafe {
-        let mut m = ManuallyDrop::new(mutex.acquire().wait());
+        let mut m = ManuallyDrop::new(acquire.as_mut().lock().wait());
         assert_eq!(as_mut_ptr(&mutex).read(), ANSWER);
         as_mut_ptr(&mutex).write(SECRET);
         ManuallyDrop::drop(&mut m);
     }
-    assert_eq!(*mutex.acquire().wait(), SECRET);
+    assert_eq!(*acquire.as_mut().lock().wait(), SECRET);
 }
 
 pub(crate) fn try_acquired_smoke<M>(new_mutex: impl FnOnce(usize) -> M)
@@ -40,10 +45,13 @@ where
     M: TrSyncMutex<Target = usize>,
 {
     let mutex = new_mutex(1);
-    let guard = mutex.try_acquire().unwrap();
-    assert!(mutex.is_acquired());
+    let acq = mutex.acquire();
+    pin_mut!(acq);
+    let ControlFlow::Continue(guard) = Try::branch(acq.as_mut().try_lock())
+    else {
+        panic!("try_lock failed");
+    };
     assert_eq!(*guard, 1);
-    assert!(mutex.try_acquire().is_none());
     drop(guard)
 }
 
@@ -114,12 +122,14 @@ where
         let mut c = 0usize;
         let id = &mutex;
         let mut vec = Vec::with_capacity(1);
-        // let cancel = mod_can::NonCancellableToken::shared_ref();
+        let acq = mutex.acquire();
+        pin_mut!(acq);
         let mut cancel = mod_can::CancelledToken::pinned();
         loop {
             c += 1usize;
-            let acq = mutex
-                .acquire()
+            let acq = acq
+                .as_mut()
+                .lock()
                 .may_cancel_with(cancel.as_mut());
             let ControlFlow::Continue(mut guard) = acq.branch() else {
                 // log::trace!("{id:p} #{c} vec.len({}) no guard acquired", vec.len());
