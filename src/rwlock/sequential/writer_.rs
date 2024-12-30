@@ -17,7 +17,7 @@ use abs_sync::{
 
 use crate::rwlock::BorrowPinMut;
 use super::{
-    rwlock_::{Acquire, may_cancel_with_impl_},
+    acquire_::Acquire,
     reader_::ReaderGuard,
     upgrade_::UpgradableReaderGuard,
 };
@@ -46,13 +46,13 @@ where
     }
 
     pub fn downgrade_to_reader(self) -> ReaderGuard<'a, 'g, T, B, D, O> {
-        Acquire::downgrade_writer_to_reader(self)
+        todo!()
     }
 
     pub fn downgrade_to_upgradable(
         self,
     ) -> UpgradableReaderGuard<'a, 'g, T, B, D, O> {
-        Acquire::downgrade_writer_to_upgradable(self)
+        todo!()
     }
 }
 
@@ -65,7 +65,7 @@ where
     O: TrCmpxchOrderings,
 {
     fn drop(&mut self) {
-        self.0.as_mut().drop_writer_guard()
+        todo!()
     }
 }
 
@@ -174,12 +174,8 @@ where
     where
         C: TrCancellationToken,
     {
-        may_cancel_with_impl_(
-            self,
-            |t| t.0.as_mut(),
-            Acquire::try_write,
-            cancel,
-        )
+        let _ = cancel;
+        todo!()
     }
 
     #[inline(always)]

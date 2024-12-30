@@ -18,8 +18,9 @@ use abs_sync::{
 
 use crate::rwlock::BorrowPinMut;
 use super::{
-    rwlock_::{Acquire, may_cancel_with_impl_},
+    acquire_::Acquire,
     reader_::ReaderGuard,
+    rwlock_::SpinningRwLock,
     writer_::WriterGuard,
 };
 
@@ -46,15 +47,15 @@ where
     }
 
     pub fn downgrade(self) -> ReaderGuard<'a, 'g, T, B, D, O> {
-        Acquire::downgrade_upgradable_to_reader(self)
+        todo!()
     }
 
     pub fn try_upgrade(self) -> Result<WriterGuard<'a, 'g, T, B, D, O>, Self> {
-        Acquire::try_upgrade_to_writer(self)
+        todo!()
     }
 
     pub fn upgrade(self) -> Upgrade<'a, 'g, T, B, D, O> {
-        Upgrade::new(self)
+        todo!()
     }
 }
 
@@ -67,7 +68,7 @@ where
     O: TrCmpxchOrderings,
 {
     fn drop(&mut self) {
-        self.0.as_mut().drop_upgradable_read_guard()
+        todo!()
     }
 }
 
@@ -171,12 +172,7 @@ where
     where
         C: TrCancellationToken,
     {
-        may_cancel_with_impl_(
-            self,
-            |t| t.0.as_mut(),
-            Acquire::try_upgradable_read,
-            cancel,
-        )
+        todo!()
     }
 
     #[inline(always)]
@@ -245,7 +241,7 @@ where
     pub fn try_upgrade<'u>(
         self: Pin<&'u mut Self>,
     ) -> Option<WriterGuard<'a, 'u, T, B, D, O>> {
-        Acquire::try_upgrade_pinned_to_writer(self.guard_pinned())
+        todo!()
     }
 
     pub fn upgrade<'u>(
@@ -336,27 +332,14 @@ where
     }
 
     pub fn may_cancel_with<C>(
-        mut self,
+        self,
         cancel: Pin<&mut C>,
     ) -> Option<WriterGuard<'a, 'g, T, B, D, O>>
     where
         C: TrCancellationToken,
     {
-        let guard_pin = &mut self.0;
-        loop {
-            let pin = unsafe {
-                let ptr = guard_pin.as_mut().get_unchecked_mut();
-                let mut p = NonNull::new_unchecked(ptr);
-                Pin::new_unchecked(p.as_mut())
-            };
-            let opt = Acquire::try_upgrade_pinned_to_writer(pin);
-            if opt.is_some()  {
-                break opt;
-            };
-            if cancel.is_cancelled() {
-                break Option::None;
-            }
-        }
+        let _ = cancel;
+        todo!()
     }
 
     #[inline(always)]

@@ -23,6 +23,7 @@ use abs_sync::{
     sync_tasks::TrSyncTask,
 };
 
+use crate::rwlock::BorrowPinMut;
 use super::{
     reader_::{ReadTask, ReaderGuard},
     writer_::{WriteTask, WriterGuard},
@@ -46,10 +47,6 @@ where
         let cell = <C as TrAtomicCell>::new(val);
         SpinningRwLockOwned::<T, C, O>::new(data, cell)
     }
-}
-
-pub(super) trait BorrowPinMut<'a, T: ?Sized> {
-    fn borrow_pin_mut(&mut self) -> &mut Pin<&'a mut T>;
 }
 
 #[derive(Debug)]

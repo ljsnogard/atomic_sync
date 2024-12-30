@@ -1,4 +1,4 @@
-﻿mod impl_;
+﻿mod rwlock_;
 mod reader_;
 mod writer_;
 mod upgrade_;
@@ -6,7 +6,7 @@ mod upgrade_;
 #[cfg(test)]
 mod tests_;
 
-pub use impl_::{
+pub use rwlock_::{
     Acquire, SpinningRwLock, SpinningRwLockBorrowed, SpinningRwLockOwned,
 };
 pub use reader_::{ReadTask, ReaderGuard};

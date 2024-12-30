@@ -15,4 +15,5 @@ pub mod x_deps {
     pub use abs_sync::x_deps::pin_utils;
 
     pub use atomex;
+    pub use atomex::x_deps::funty;
 }
