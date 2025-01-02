@@ -80,7 +80,7 @@ impl<T: Sized> TrMutexSignal<*mut T> for PtrAsMutexSignal<T> {
     }
 }
 
-pub type SpinningMutexBorrowed<
+pub type SpinningMutexEmbedded<
         'a,
         T,
         C = AtomicUsize,
@@ -94,6 +94,19 @@ pub type SpinningMutexOwned<
         S = MsbAsMutexSignal<<C as TrAtomicCell>::Value>,
         O = StrictOrderings,
     > = SpinningMutex<T, <C as TrAtomicCell>::Value, C, S, O>;
+
+impl<'a, T, C, S, O> SpinningMutexEmbedded<'a, T, C, S, O>
+where
+    C: TrAtomicCell<Value: TrAtomicData<AtomicCell = C> + Copy + Default>,
+    S: TrMutexSignal<<C as TrAtomicCell>::Value>,
+    O: TrCmpxchOrderings,
+{
+    pub fn new_embedded(data: T, cell: &'a mut C) -> Self {
+        let val = <<C as TrAtomicCell>::Value as Default>::default();
+        cell.store(val, Ordering::Relaxed);
+        SpinningMutexEmbedded::<T, C, S, O>::new(data, cell)
+    }
+}
 
 impl<T, C, S, O> SpinningMutexOwned<T, C, S, O>
 where
@@ -504,7 +517,7 @@ mod tests_ {
     use crate::{mutex::smoke_tests_, x_deps::{atomex, pin_utils}};
     use super::{
         MsbAsMutexSignal, PtrAsMutexSignal,
-        SpinningMutexBorrowed, SpinningMutexOwned,
+        SpinningMutexEmbedded, SpinningMutexOwned,
     };
 
     #[test]
@@ -554,7 +567,7 @@ mod tests_ {
         let mut cell = Box::new(AtomicPtr::new(PTR_SIZE as *mut usize));
         let ptr = cell.load(Ordering::Relaxed);
         let mut data = Box::new(ANSWER);
-        let lock = SpinningMutexBorrowed
+        let lock = SpinningMutexEmbedded
             ::<&mut usize, AtomicPtr<usize>, PtrAsMutexSignal<usize>, StrictOrderings>
             ::new(&mut data, &mut cell);
 

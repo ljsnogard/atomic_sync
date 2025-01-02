@@ -18,33 +18,33 @@ use abs_sync::{
 use super::rwlock_::{Acquire, may_cancel_with_impl_};
 
 #[derive(Debug)]
-pub struct ReaderGuard<'a, 'g, T, B, D, O>(Pin<&'g mut Acquire<'a, T, B, D, O>>)
+pub struct ReaderGuard<'a, 'g, T, D, B, O>(Pin<&'g mut Acquire<'a, T, D, B, O>>)
 where
     T: 'a + ?Sized,
-    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     D: TrAtomicData + Unsigned,
     <D as TrAtomicData>::AtomicCell: Bitwise,
+    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings;
 
-impl<'a, 'g, T, B, D, O> ReaderGuard<'a, 'g, T, B, D, O>
+impl<'a, 'g, T, D, B, O> ReaderGuard<'a, 'g, T, D, B, O>
 where
     T: 'a + ?Sized,
-    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     D: TrAtomicData + Unsigned,
     <D as TrAtomicData>::AtomicCell: Bitwise,
+    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
-    pub(super) fn new(acquire: Pin<&'g mut Acquire<'a, T, B, D, O>>) -> Self {
+    pub(super) fn new(acquire: Pin<&'g mut Acquire<'a, T, D, B, O>>) -> Self {
         ReaderGuard(acquire)
     }
 }
 
-impl<'a, T, B, D, O> Deref for ReaderGuard<'a, '_, T, B, D, O>
+impl<'a, T, D, B, O> Deref for ReaderGuard<'a, '_, T, D, B, O>
 where
     T: 'a + ?Sized,
-    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     D: TrAtomicData + Unsigned,
     <D as TrAtomicData>::AtomicCell: Bitwise,
+    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
     type Target = T;
@@ -54,24 +54,24 @@ where
     }
 }
 
-impl<'a, 'g, T, B, D, O> sync_lock::TrReaderGuard<'a, 'g, T>
-for ReaderGuard<'a, 'g, T, B, D, O>
+impl<'a, 'g, T, D, B, O> sync_lock::TrReaderGuard<'a, 'g, T>
+for ReaderGuard<'a, 'g, T, D, B, O>
 where
     T: 'a + ?Sized,
-    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     D: TrAtomicData + Unsigned,
     <D as TrAtomicData>::AtomicCell: Bitwise,
+    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
-    type Acquire = Acquire<'a, T, B, D, O>;
+    type Acquire = Acquire<'a, T, D, B, O>;
 }
 
-impl<'a, T, B, D, O> Drop for ReaderGuard<'a, '_, T, B, D, O>
+impl<'a, T, D, B, O> Drop for ReaderGuard<'a, '_, T, D, B, O>
 where
     T: 'a + ?Sized,
-    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     D: TrAtomicData + Unsigned,
     <D as TrAtomicData>::AtomicCell: Bitwise,
+    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
     fn drop(&mut self) {
@@ -79,23 +79,23 @@ where
     }
 }
 
-pub struct ReadTask<'a, 'g, T, B, D, O>(Pin<&'g mut Acquire<'a, T, B, D, O>>)
+pub struct ReadTask<'a, 'g, T, D, B, O>(Pin<&'g mut Acquire<'a, T, D, B, O>>)
 where
     T: ?Sized,
-    D: Copy + Unsigned + TrAtomicData,
+    D: TrAtomicData + Unsigned,
     <D as TrAtomicData>::AtomicCell: Bitwise,
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings;
 
-impl<'a, 'g, T, B, D, O> ReadTask<'a, 'g, T, B, D, O>
+impl<'a, 'g, T, D, B, O> ReadTask<'a, 'g, T, D, B, O>
 where
     T: ?Sized,
-    D: Copy + Unsigned + TrAtomicData,
+    D: TrAtomicData + Unsigned,
     <D as TrAtomicData>::AtomicCell: Bitwise,
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
-    pub(super) fn new(acquire: Pin<&'g mut Acquire<'a, T, B, D, O>>) -> Self {
+    pub(super) fn new(acquire: Pin<&'g mut Acquire<'a, T, D, B, O>>) -> Self {
         ReadTask(acquire)
     }
 
@@ -103,7 +103,7 @@ where
     pub fn may_cancel_with<C>(
         self,
         cancel: Pin<&mut C>,
-    ) -> Option<ReaderGuard<'a, 'g, T, B, D, O>>
+    ) -> Option<ReaderGuard<'a, 'g, T, D, B, O>>
     where
         C: TrCancellationToken,
     {
@@ -121,15 +121,15 @@ where
     }
 }
 
-impl<'a, 'g, T, B, D, O> TrSyncTask for ReadTask<'a, 'g, T, B, D, O>
+impl<'a, 'g, T, D, B, O> TrSyncTask for ReadTask<'a, 'g, T, D, B, O>
 where
     T: ?Sized,
-    D: Copy + Unsigned + TrAtomicData,
+    D: TrAtomicData + Unsigned,
     <D as TrAtomicData>::AtomicCell: Bitwise,
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
-    type Output = ReaderGuard<'a, 'g, T, B, D, O>;
+    type Output = ReaderGuard<'a, 'g, T, D, B, O>;
 
     #[inline(always)]
     fn may_cancel_with<C>(
@@ -140,19 +140,5 @@ where
         C: TrCancellationToken,
     {
         ReadTask::may_cancel_with(self, cancel)
-    }
-}
-
-impl<'a, 'g, T, B, D, O> From<ReadTask<'a, 'g, T, B, D, O>>
-for ReaderGuard<'a, 'g, T, B, D, O>
-where
-    T: ?Sized,
-    D: Copy + Unsigned + TrAtomicData,
-    <D as TrAtomicData>::AtomicCell: Bitwise,
-    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
-    O: TrCmpxchOrderings,
-{
-    fn from(task: ReadTask<'a, 'g, T, B, D, O>) -> Self {
-        task.wait()
     }
 }

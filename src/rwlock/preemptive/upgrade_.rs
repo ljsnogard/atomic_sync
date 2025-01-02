@@ -24,46 +24,46 @@ use super::{
 };
 
 #[derive(Debug)]
-pub struct UpgradableReaderGuard<'a, 'g, T, B, D, O>(
-    Pin<&'g mut Acquire<'a, T, B, D, O>>)
+pub struct UpgradableReaderGuard<'a, 'g, T, D, B, O>(
+    Pin<&'g mut Acquire<'a, T, D, B, O>>)
 where
     T: 'a + ?Sized,
-    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     D: TrAtomicData + Unsigned,
     <D as TrAtomicData>::AtomicCell: Bitwise,
+    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings;
 
-impl<'a, 'g, T, B, D, O> UpgradableReaderGuard<'a, 'g, T, B, D, O>
+impl<'a, 'g, T, D, B, O> UpgradableReaderGuard<'a, 'g, T, D, B, O>
 where
     T: 'a + ?Sized,
-    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     D: TrAtomicData + Unsigned,
     <D as TrAtomicData>::AtomicCell: Bitwise,
+    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
-    pub(super) fn new(acquire: Pin<&'g mut Acquire<'a, T, B, D, O>>) -> Self {
+    pub(super) fn new(acquire: Pin<&'g mut Acquire<'a, T, D, B, O>>) -> Self {
         UpgradableReaderGuard(acquire)
     }
 
-    pub fn downgrade(self) -> ReaderGuard<'a, 'g, T, B, D, O> {
+    pub fn downgrade(self) -> ReaderGuard<'a, 'g, T, D, B, O> {
         Acquire::downgrade_upgradable_to_reader(self)
     }
 
-    pub fn try_upgrade(self) -> Result<WriterGuard<'a, 'g, T, B, D, O>, Self> {
+    pub fn try_upgrade(self) -> Result<WriterGuard<'a, 'g, T, D, B, O>, Self> {
         Acquire::try_upgrade_to_writer(self)
     }
 
-    pub fn upgrade(self) -> Upgrade<'a, 'g, T, B, D, O> {
+    pub fn upgrade(self) -> Upgrade<'a, 'g, T, D, B, O> {
         Upgrade::new(self)
     }
 }
 
-impl<'a, T, B, D, O> Drop for UpgradableReaderGuard<'a, '_, T, B, D, O>
+impl<'a, T, D, B, O> Drop for UpgradableReaderGuard<'a, '_, T, D, B, O>
 where
     T: 'a + ?Sized,
-    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     D: TrAtomicData + Unsigned,
     <D as TrAtomicData>::AtomicCell: Bitwise,
+    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
     fn drop(&mut self) {
@@ -71,26 +71,26 @@ where
     }
 }
 
-impl<'a, 'g, T, B, D, O> BorrowPinMut<'g, Acquire<'a, T, B, D, O>>
-for UpgradableReaderGuard<'a, 'g, T, B, D, O>
+impl<'a, 'g, T, D, B, O> BorrowPinMut<'g, Acquire<'a, T, D, B, O>>
+for UpgradableReaderGuard<'a, 'g, T, D, B, O>
 where
     T: 'a + ?Sized,
-    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     D: TrAtomicData + Unsigned,
     <D as TrAtomicData>::AtomicCell: Bitwise,
+    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
-    fn borrow_pin_mut(&mut self) -> &mut Pin<&'g mut Acquire<'a, T, B, D, O>> {
+    fn borrow_pin_mut(&mut self) -> &mut Pin<&'g mut Acquire<'a, T, D, B, O>> {
         &mut self.0
     }
 }
 
-impl<'a, T, B, D, O> Deref for UpgradableReaderGuard<'a, '_, T, B, D, O>
+impl<'a, T, D, B, O> Deref for UpgradableReaderGuard<'a, '_, T, D, B, O>
 where
     T: 'a + ?Sized,
-    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     D: TrAtomicData + Unsigned,
     <D as TrAtomicData>::AtomicCell: Bitwise,
+    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
     type Target = T;
@@ -100,27 +100,27 @@ where
     }
 }
 
-impl<'a, 'g, T, B, D, O> sync_lock::TrReaderGuard<'a, 'g, T>
-for UpgradableReaderGuard<'a, 'g, T, B, D, O>
+impl<'a, 'g, T, D, B, O> sync_lock::TrReaderGuard<'a, 'g, T>
+for UpgradableReaderGuard<'a, 'g, T, D, B, O>
 where
     'a: 'g,
     Self: 'g,
     T: 'a + ?Sized,
-    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     D: TrAtomicData + Unsigned,
     <D as TrAtomicData>::AtomicCell: Bitwise,
+    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
-    type Acquire = Acquire<'a, T, B, D, O>;
+    type Acquire = Acquire<'a, T, D, B, O>;
 }
 
-impl<'a, 'g, T, B, D, O> sync_lock::TrUpgradableReaderGuard<'a, 'g, T>
-for UpgradableReaderGuard<'a, 'g, T, B, D, O>
+impl<'a, 'g, T, D, B, O> sync_lock::TrUpgradableReaderGuard<'a, 'g, T>
+for UpgradableReaderGuard<'a, 'g, T, D, B, O>
 where
     T: 'a + ?Sized,
-    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     D: TrAtomicData + Unsigned,
     <D as TrAtomicData>::AtomicCell: Bitwise,
+    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
     #[inline(always)]
@@ -143,31 +143,31 @@ where
     }
 }
 
-pub struct UpgradableReadTask<'a, 'g, T, B, D, O>(
-    Pin<&'g mut Acquire<'a, T, B, D, O>>)
+pub struct UpgradableReadTask<'a, 'g, T, D, B, O>(
+    Pin<&'g mut Acquire<'a, T, D, B, O>>)
 where
     T: ?Sized,
-    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
-    D: Copy + Unsigned + TrAtomicData,
+    D: TrAtomicData + Unsigned,
     <D as TrAtomicData>::AtomicCell: Bitwise,
+    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings;
 
-impl<'a, 'g, T, B, D, O> UpgradableReadTask<'a, 'g, T, B, D, O>
+impl<'a, 'g, T, D, B, O> UpgradableReadTask<'a, 'g, T, D, B, O>
 where
     T: ?Sized,
-    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
-    D: Copy + Unsigned + TrAtomicData,
+    D: TrAtomicData + Unsigned,
     <D as TrAtomicData>::AtomicCell: Bitwise,
+    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
-    pub(super) fn new(acquire: Pin<&'g mut Acquire<'a, T, B, D, O>>) -> Self {
+    pub(super) fn new(acquire: Pin<&'g mut Acquire<'a, T, D, B, O>>) -> Self {
         UpgradableReadTask(acquire)
     }
 
     pub fn may_cancel_with<C>(
         self,
         cancel: Pin<&mut C>,
-    ) -> Option<UpgradableReaderGuard<'a, 'g, T, B, D, O>>
+    ) -> Option<UpgradableReaderGuard<'a, 'g, T, D, B, O>>
     where
         C: TrCancellationToken,
     {
@@ -185,15 +185,15 @@ where
     }
 }
 
-impl<'a, 'g, T, B, D, O> TrSyncTask for UpgradableReadTask<'a, 'g, T, B, D, O>
+impl<'a, 'g, T, D, B, O> TrSyncTask for UpgradableReadTask<'a, 'g, T, D, B, O>
 where
     T: ?Sized,
-    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
-    D: Copy + Unsigned + TrAtomicData,
+    D: TrAtomicData + Unsigned,
     <D as TrAtomicData>::AtomicCell: Bitwise,
+    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
-    type Output = UpgradableReaderGuard<'a, 'g, T, B, D, O>;
+    type Output = UpgradableReaderGuard<'a, 'g, T, D, B, O>;
 
     #[inline(always)]
     fn may_cancel_with<C>(
@@ -207,22 +207,22 @@ where
     }
 }
 
-impl<'a, 'g, T, B, D, O> From<UpgradableReadTask<'a, 'g, T, B, D, O>>
-for UpgradableReaderGuard<'a, 'g, T, B, D, O>
+impl<'a, 'g, T, D, B, O> From<UpgradableReadTask<'a, 'g, T, D, B, O>>
+for UpgradableReaderGuard<'a, 'g, T, D, B, O>
 where
     T: ?Sized,
-    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
-    D: Copy + Unsigned + TrAtomicData,
+    D: TrAtomicData + Unsigned,
     <D as TrAtomicData>::AtomicCell: Bitwise,
+    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
-    fn from(task: UpgradableReadTask<'a, 'g, T, B, D, O>) -> Self {
+    fn from(task: UpgradableReadTask<'a, 'g, T, D, B, O>) -> Self {
         task.wait()
     }
 }
 
 
-pub struct Upgrade<'a, 'g, T, B, D, O>(UpgradableReaderGuard<'a, 'g, T, B, D, O>)
+pub struct Upgrade<'a, 'g, T, D, B, O>(UpgradableReaderGuard<'a, 'g, T, D, B, O>)
 where
     T: ?Sized,
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
@@ -230,40 +230,40 @@ where
     <D as TrAtomicData>::AtomicCell: Bitwise,
     O: TrCmpxchOrderings;
 
-impl<'a, 'g, T, B, D, O> Upgrade<'a, 'g, T, B, D, O>
+impl<'a, 'g, T, D, B, O> Upgrade<'a, 'g, T, D, B, O>
 where
     T: ?Sized,
-    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
-    D: Copy + Unsigned + TrAtomicData,
+    D: TrAtomicData + Unsigned,
     <D as TrAtomicData>::AtomicCell: Bitwise,
+    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
-    pub fn new(guard: UpgradableReaderGuard<'a, 'g, T, B, D, O>) -> Self {
+    pub fn new(guard: UpgradableReaderGuard<'a, 'g, T, D, B, O>) -> Self {
         Upgrade(guard)
     }
 
     pub fn try_upgrade<'u>(
         self: Pin<&'u mut Self>,
-    ) -> Option<WriterGuard<'a, 'u, T, B, D, O>> {
+    ) -> Option<WriterGuard<'a, 'u, T, D, B, O>> {
         Acquire::try_upgrade_pinned_to_writer(self.guard_pinned())
     }
 
     pub fn upgrade<'u>(
         self: Pin<&'u mut Self>,
-    ) -> UpgradeTask<'a, 'g, 'u, T, B, D, O>
+    ) -> UpgradeTask<'a, 'g, 'u, T, D, B, O>
     where
         'g: 'u,
     {
         UpgradeTask::new(self.guard_pinned())
     }
 
-    pub fn into_guard(self) -> UpgradableReaderGuard<'a, 'g, T, B, D, O> {
+    pub fn into_guard(self) -> UpgradableReaderGuard<'a, 'g, T, D, B, O> {
         self.0
     }
 
     fn guard_pinned(
         self: Pin<&mut Self>,
-    ) -> Pin<&mut UpgradableReaderGuard<'a, 'g, T, B, D, O>> {
+    ) -> Pin<&mut UpgradableReaderGuard<'a, 'g, T, D, B, O>> {
         // Safe to get an `Pin<&mut UpgradableReaderGuard>` without moving it
         unsafe {
             let this = self.get_unchecked_mut();
@@ -272,16 +272,16 @@ where
     }
 }
 
-impl<'a, 'g, T, B, D, O> sync_lock::TrUpgrade<'a, 'g, T>
-for Upgrade<'a, 'g, T, B, D, O>
+impl<'a, 'g, T, D, B, O> sync_lock::TrUpgrade<'a, 'g, T>
+for Upgrade<'a, 'g, T, D, B, O>
 where
     T: ?Sized,
-    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
-    D: Copy + Unsigned + TrAtomicData,
+    D: TrAtomicData + Unsigned,
     <D as TrAtomicData>::AtomicCell: Bitwise,
+    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
-    type Acquire = Acquire<'a, T, B, D, O>;
+    type Acquire = Acquire<'a, T, D, B, O>;
 
     #[inline(always)]
     fn try_upgrade<'u>(
@@ -312,25 +312,25 @@ where
     }
 }
 
-pub struct UpgradeTask<'a, 'g, 'u, T, B, D, O>(
-    Pin<&'u mut UpgradableReaderGuard<'a, 'g, T, B, D, O>>)
+pub struct UpgradeTask<'a, 'g, 'u, T, D, B, O>(
+    Pin<&'u mut UpgradableReaderGuard<'a, 'g, T, D, B, O>>)
 where
     T: ?Sized,
-    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
-    D: Copy + Unsigned + TrAtomicData,
+    D: TrAtomicData + Unsigned,
     <D as TrAtomicData>::AtomicCell: Bitwise,
+    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings;
 
-impl<'a, 'g, 'u, T, B, D, O> UpgradeTask<'a, 'g, 'u, T, B, D, O>
+impl<'a, 'g, 'u, T, D, B, O> UpgradeTask<'a, 'g, 'u, T, D, B, O>
 where
     T: ?Sized,
-    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
-    D: Copy + Unsigned + TrAtomicData,
+    D: TrAtomicData + Unsigned,
     <D as TrAtomicData>::AtomicCell: Bitwise,
+    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
     pub(super) fn new(
-        guard: Pin<&'u mut UpgradableReaderGuard<'a, 'g, T, B, D, O>>,
+        guard: Pin<&'u mut UpgradableReaderGuard<'a, 'g, T, D, B, O>>,
     ) -> Self {
         UpgradeTask(guard)
     }
@@ -338,7 +338,7 @@ where
     pub fn may_cancel_with<C>(
         mut self,
         cancel: Pin<&mut C>,
-    ) -> Option<WriterGuard<'a, 'g, T, B, D, O>>
+    ) -> Option<WriterGuard<'a, 'g, T, D, B, O>>
     where
         C: TrCancellationToken,
     {
@@ -365,15 +365,15 @@ where
     }
 }
 
-impl<'a, 'u, T, B, D, O> TrSyncTask for UpgradeTask<'a, '_, 'u, T, B, D, O>
+impl<'a, 'u, T, D, B, O> TrSyncTask for UpgradeTask<'a, '_, 'u, T, D, B, O>
 where
     T: ?Sized,
-    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
-    D: Copy + Unsigned + TrAtomicData,
+    D: TrAtomicData + Unsigned,
     <D as TrAtomicData>::AtomicCell: Bitwise,
+    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
-    type Output = WriterGuard<'a, 'u, T, B, D, O>;
+    type Output = WriterGuard<'a, 'u, T, D, B, O>;
 
     #[inline(always)]
     fn may_cancel_with<C>(
@@ -387,16 +387,16 @@ where
     }
 }
 
-impl<'a, 'g, 'u, T, B, D, O> From<UpgradeTask<'a, 'g, 'u, T, B, D, O>>
-for WriterGuard<'a, 'u, T, B, D, O>
+impl<'a, 'g, 'u, T, D, B, O> From<UpgradeTask<'a, 'g, 'u, T, D, B, O>>
+for WriterGuard<'a, 'u, T, D, B, O>
 where
     T: ?Sized,
-    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
-    D: Copy + Unsigned + TrAtomicData,
+    D: TrAtomicData + Unsigned,
     <D as TrAtomicData>::AtomicCell: Bitwise,
+    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
-    fn from(task: UpgradeTask<'a, 'g, 'u, T, B, D, O>) -> Self {
+    fn from(task: UpgradeTask<'a, 'g, 'u, T, D, B, O>) -> Self {
         task.wait()
     }
 }
