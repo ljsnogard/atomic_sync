@@ -12,8 +12,8 @@ license = "MIT/Apache-2.0"
 readme = "README.md"
 
 [dependencies]
-abs_sync = { git = "https://github.com/ljsnogard/abs_sync", branch = "dev/0.1.2" }
-atomex = { git = "https://github.com/ljsnogard/atomex-rs", branch = "dev/0.1.1" }
+abs_sync = { git = "https://github.com/ljsnogard/abs_sync.git", branch = "dev/0.1.2" }
+atomex = { git = "https://github.com/ljsnogard/atomex-rs.git", branch = "dev/0.1.1" }
 
 pin-utils = { version = "*" }
 
