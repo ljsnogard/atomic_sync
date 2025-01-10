@@ -1,6 +1,5 @@
 ﻿use pin_utils::pin_mut;
 
-use crate::x_deps::pin_utils;
 use super::*;
 
 #[test]

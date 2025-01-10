@@ -12,7 +12,6 @@ use abs_sync::{
 };
 
 use pin_utils::pin_mut;
-use crate::x_deps::pin_utils;
 
 fn init_env_logger_() {
     let _ = env_logger::builder().is_test(true).try_init();

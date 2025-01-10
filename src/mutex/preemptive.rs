@@ -514,7 +514,7 @@ mod tests_ {
     };
     use pin_utils::pin_mut;
     use atomex::{LocksOrderings, StrictOrderings};
-    use crate::{mutex::smoke_tests_, x_deps::{atomex, pin_utils}};
+    use crate::{mutex::smoke_tests_, x_deps::atomex};
     use super::{
         MsbAsMutexSignal, PtrAsMutexSignal,
         SpinningMutexEmbedded, SpinningMutexOwned,

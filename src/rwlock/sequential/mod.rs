@@ -1,4 +1,7 @@
-﻿mod acquire_;
+﻿//! This module contains the implementation of a spinning reader-writer lock
+//! designed with first-in-first-out (FIFO) fairness among its contenders.
+
+mod acquire_;
 mod rwlock_;
 mod reader_;
 mod upgrade_;

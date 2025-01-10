@@ -112,7 +112,6 @@ where
     /// use pin_utils::pin_mut;
     /// use atomic_sync::{
     ///     rwlock::preemptive::SpinningRwLockOwned,
-    ///     x_deps::pin_utils,
     /// };
     ///
     /// let lock = SpinningRwLockOwned::<()>::new_owned(());
@@ -165,7 +164,6 @@ where
     /// use pin_utils::pin_mut;
     /// use atomic_sync::{
     ///     rwlock::preemptive::SpinningRwLockOwned,
-    ///     x_deps::pin_utils,
     /// };
     ///
     /// let lock = SpinningRwLockOwned::<usize>::new_owned(42);

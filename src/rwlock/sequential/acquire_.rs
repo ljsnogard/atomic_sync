@@ -21,16 +21,12 @@ use abs_sync::{
     sync_tasks::TrSyncTask,
 };
 
-use crate::mutex::embedded::{MsbAsMutexSignal, SpinningMutexBorrowed};
 use super::{
     reader_::{ReaderGuard, ReadTask},
     rwlock_::SpinningRwLock,
     upgrade_::{UpgradableReaderGuard, UpgradableReadTask},
     writer_::{WriterGuard, WriteTask},
 };
-
-type AcqLinkMutex<'a, O> =
-    SpinningMutexBorrowed<'a, (), AtomicUsize, MsbAsMutexSignal<usize>, O>;
 
 pub(super) type AtomAcqLinkPtr<O> =
     AtomexPtr<AcqLink<O>, AtomicPtr<AcqLink<O>>, O>;
@@ -134,8 +130,7 @@ where
     type UpgradableGuard<'g> =
         UpgradableReaderGuard<'a, 'g, T, B, D, O> where 'a: 'g;
 
-
-    #[inline(always)]
+    #[inline]
     fn try_read<'g>(
         self: Pin<&'g mut Self>,
     ) -> impl Try<Output = Self::ReaderGuard<'g>>
@@ -145,7 +140,7 @@ where
         Acquire::try_read(self)
     }
 
-    #[inline(always)]
+    #[inline]
     fn try_write<'g>(
         self: Pin<&'g mut Self>,
     ) -> impl Try<Output = Self::WriterGuard<'g>>
@@ -155,7 +150,7 @@ where
         Acquire::try_write(self)
     }
 
-    #[inline(always)]
+    #[inline]
     fn try_upgradable_read<'g>(
         self: Pin<&'g mut Self>,
     ) -> impl Try<Output = Self::UpgradableGuard<'g>>
@@ -165,7 +160,7 @@ where
         Acquire::try_upgradable_read(self)
     }
 
-    #[inline(always)]
+    #[inline]
     fn read<'g>(
         self: Pin<&'g mut Self>,
     ) -> impl TrSyncTask<Output = Self::ReaderGuard<'g>>
@@ -175,7 +170,7 @@ where
         Acquire::read(self)
     }
 
-    #[inline(always)]
+    #[inline]
     fn write<'g>(
         self: Pin<&'g mut Self>,
     ) -> impl TrSyncTask<Output = Self::WriterGuard<'g>>
@@ -185,7 +180,7 @@ where
         Acquire::write(self)
     }
 
-    #[inline(always)]
+    #[inline]
     fn upgradable_read<'g>(
         self: Pin<&'g mut Self>,
     ) -> impl TrSyncTask<Output = Self::UpgradableGuard<'g>>
@@ -228,49 +223,122 @@ where
         Self::new(ptr::null_mut(), ptr::null_mut())
     }
 
-    const fn guard_() -> *mut AcqLink<O> {
-        usize::MAX as *mut AcqLink<O>
+    pub const unsafe fn acq_ptr<'a, T, D, B>(
+        self: Pin<&Self>,
+    ) -> NonNull<Acquire<'a, T, B, D, O>>
+    where
+        T: ?Sized,
+        B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
+        D: TrAtomicData + Unsigned,
+        <D as TrAtomicData>::AtomicCell: Bitwise,
+        O: TrCmpxchOrderings,
+    {
+        let count= core::mem::offset_of!(Acquire<'a, T, B, D, O>, link_);
+        let this = self.get_ref() as *const _ as *mut Self;
+        let ptr = (this as *mut u8).sub(count) as *mut Acquire<'a, T, B, D, O>;
+        unsafe { NonNull::new_unchecked(ptr) }
     }
 
-    /// Try to become the next of the followed node. 
+    /// Try to insert a candidate node as the next node to the current node.
     /// 
-    /// Returns Ok(followed.prev_), or Err(followed.next_) if followed.next is 
-    /// not null.
+    /// Returns Ok(candidate), or Err(Some(self.next_)) if self.next not null,
+    /// or Err(None) if cancelled.
     /// 
     /// ## Safety
     /// * Call this fn only when self is pinned along with `Acquire`
-    pub fn try_follow(
-        self: Pin<&Self>,
-        followed: Pin<&Self>,
-    ) -> Result<*mut Self, Pin<&Self>> {
-        let mut prev_prev = ptr::null_mut();
-        // to lock the previous node
-        let guard = Self::guard_();
-        loop {
-            let r = followed
-                .prev_
-                .compare_exchange_weak(prev_prev, guard);
-            if let Result::Err(x) = r {
-                if x != guard {
-                    prev_prev = x
-                }
-            } else {
-                break
-            }
+    fn try_insert_next_<'a, 'f, C: TrCancellationToken>(
+        self: Pin<&'a Self>,
+        candidate: Pin<&'a Self>,
+        mut cancel: Pin<&'f mut C>,
+    ) -> Result<Pin<&'a Self>, Option<Pin<&'a Self>>>
+    where
+        'a: 'f,
+    {
+        // try_to lock candidate node
+        let res = AcqLinkGuard::try_acquire(candidate, cancel.as_mut());
+        let Result::Ok(mut candidate_guard) = res else {
+            return Result::Err(Option::None)
         };
-        if let Option::Some(prev_next) = followed.next_.load() {
-            followed.prev_.store(prev_prev);
+        // to lock the previous node
+        let res = AcqLinkGuard::try_acquire(self, cancel);
+        let Result::Ok(this_guard) = res else {
+            return Result::Err(Option::None)
+        };
+        // followed.next_ is not null,
+        if let Option::Some(prev_next) = self.next_.load() {
             let x = unsafe { Pin::new_unchecked(prev_next.as_ref()) };
-            Result::Err(x)
+            Result::Err(Option::Some(x))
         } else {
-            followed.prev_.store(prev_prev);
-            followed.next_.store(self.get_ref() as *const _ as *mut Self);
-            self.prev_.store(followed.get_ref() as *const _ as *mut Self);
-            Result::Ok(prev_prev)
+            candidate_guard.update_prev(self.get_ref() as *const _ as *mut _);
+            drop(this_guard);
+            Result::Ok(candidate)
         }
     }
 
-    pub fn try_detach(self: Pin<&Self>) -> bool {
+    pub fn try_detach_(self: Pin<&Self>) -> bool {
         todo!()
+    }
+}
+
+struct AcqLinkGuard<'a, O>
+where
+    O: TrCmpxchOrderings,
+{
+    node_: Pin<&'a AcqLink<O>>,
+    prev_: *mut AcqLink<O>,
+}
+
+impl<'a, O> AcqLinkGuard<'a, O>
+where
+    O: TrCmpxchOrderings,
+{
+    pub const fn guarded() -> *mut AcqLink<O> {
+        usize::MAX as *mut AcqLink<O>
+    }
+
+    pub fn try_acquire<'f, C: TrCancellationToken>(
+        node: Pin<&'a AcqLink<O>>,
+        cancel: Pin<&'f mut C>,
+    ) -> Result<Self, *mut AcqLink<O>>
+    where
+        'a: 'f,
+    {
+        let desired = Self::guarded();
+        let mut current = ptr::null_mut();
+        loop {
+            match node.prev_.compare_exchange_weak(current, desired) {
+                Result::Err(x) => {
+                    if cancel.is_cancelled() {
+                        break Result::Err(x)
+                    }
+                    if x != Self::guarded() {
+                        current = x
+                    }
+                },
+                Result::Ok(p) => {
+                    break Result::Ok(AcqLinkGuard { node_: node, prev_: p })
+                },
+            }
+        }
+    }
+
+    pub fn update_prev(&mut self, prev: *mut AcqLink<O>) {
+        self.prev_ = prev
+    }
+}
+
+impl<O> Drop for AcqLinkGuard<'_, O>
+where
+    O: TrCmpxchOrderings,
+{
+    fn drop(&mut self) {
+        let guard = Self::guarded();
+        let expect = |p: *mut AcqLink<O>| ptr::eq(p, guard);
+        let desire = |_| self.prev_;
+        let x = self
+            .node_
+            .prev_
+            .try_spin_compare_exchange_weak(expect, desire);
+        assert!(x.is_succ())
     }
 }

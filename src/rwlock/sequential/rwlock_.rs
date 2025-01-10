@@ -26,6 +26,7 @@ use super::{
 };
 
 #[derive(Debug)]
+#[repr(C)]
 pub struct SpinningRwLock<T, B = AtomicUsize, D = usize, O = StrictOrderings>
 where
     T: ?Sized,
