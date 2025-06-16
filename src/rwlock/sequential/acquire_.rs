@@ -163,7 +163,7 @@ where
     #[inline]
     fn read<'g>(
         self: Pin<&'g mut Self>,
-    ) -> impl TrSyncTask<Output = Self::ReaderGuard<'g>>
+    ) -> impl TrSyncTask<MayCancelOutput = Self::ReaderGuard<'g>>
     where
         'a: 'g
     {
@@ -173,7 +173,7 @@ where
     #[inline]
     fn write<'g>(
         self: Pin<&'g mut Self>,
-    ) -> impl TrSyncTask<Output = Self::WriterGuard<'g>>
+    ) -> impl TrSyncTask<MayCancelOutput = Self::WriterGuard<'g>>
     where
         'a: 'g
     {
@@ -183,7 +183,7 @@ where
     #[inline]
     fn upgradable_read<'g>(
         self: Pin<&'g mut Self>,
-    ) -> impl TrSyncTask<Output = Self::UpgradableGuard<'g>>
+    ) -> impl TrSyncTask<MayCancelOutput = Self::UpgradableGuard<'g>>
     where
         'a: 'g
     {
@@ -235,7 +235,8 @@ where
     {
         let count= core::mem::offset_of!(Acquire<'a, T, B, D, O>, link_);
         let this = self.get_ref() as *const _ as *mut Self;
-        let ptr = (this as *mut u8).sub(count) as *mut Acquire<'a, T, B, D, O>;
+        let ptr = unsafe { (this as *mut u8).sub(count) };
+        let ptr = ptr as *mut Acquire<'a, T, B, D, O>;
         unsafe { NonNull::new_unchecked(ptr) }
     }
 

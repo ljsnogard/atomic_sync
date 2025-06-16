@@ -59,6 +59,22 @@ where
     }
 }
 
+impl<T, B, D, O> TrSyncRwLock for SpinningRwLock<T, B, D, O>
+where
+    T: ?Sized,
+    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
+    D: TrAtomicData + Unsigned,
+    <D as TrAtomicData>::AtomicCell: Bitwise,
+    O: TrCmpxchOrderings,
+{
+    type Target = T;
+
+    #[inline]
+    fn acquire(&self) -> impl sync_lock::TrAcquire<'_, Self::Target> {
+        SpinningRwLock::acquire(self)
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct RwLockState<B, D, O>
 where
@@ -69,5 +85,5 @@ where
 {
     flag_: B,
     head_: AtomAcqLinkPtr<O>,
-    ___o_: PhantomData<D>,
+    _mark_d_: PhantomData<D>,
 }
