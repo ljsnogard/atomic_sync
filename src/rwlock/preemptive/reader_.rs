@@ -116,7 +116,7 @@ where
     }
 
     #[inline(always)]
-    pub fn wait(self) -> <Self as TrSyncTask>::Output {
+    pub fn wait(self) -> <Self as TrSyncTask>::MayCancelOutput {
         TrSyncTask::wait(self)
     }
 }
@@ -129,13 +129,13 @@ where
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
-    type Output = ReaderGuard<'a, 'g, T, D, B, O>;
+    type MayCancelOutput = ReaderGuard<'a, 'g, T, D, B, O>;
 
     #[inline(always)]
     fn may_cancel_with<C>(
         self,
         cancel: Pin<&mut C>,
-    ) -> impl Try<Output = Self::Output>
+    ) -> impl Try<Output = Self::MayCancelOutput>
     where
         C: TrCancellationToken,
     {

@@ -110,9 +110,7 @@ where
     /// 
     /// ```
     /// use pin_utils::pin_mut;
-    /// use atomic_sync::{
-    ///     rwlock::preemptive::SpinningRwLockOwned,
-    /// };
+    /// use atomic_sync::rwlock::preemptive::SpinningRwLockOwned;
     ///
     /// let lock = SpinningRwLockOwned::<()>::new_owned(());
     /// assert_eq!(lock.reader_count(), 0);
@@ -162,9 +160,7 @@ where
     /// ```
     /// use core::mem::ManuallyDrop;
     /// use pin_utils::pin_mut;
-    /// use atomic_sync::{
-    ///     rwlock::preemptive::SpinningRwLockOwned,
-    /// };
+    /// use atomic_sync::rwlock::preemptive::SpinningRwLockOwned;
     ///
     /// let lock = SpinningRwLockOwned::<usize>::new_owned(42);
     /// let acq = lock.acquire();
@@ -461,7 +457,7 @@ where
     #[inline(always)]
     fn read<'g>(
         self: Pin<&'g mut Self>,
-    ) -> impl TrSyncTask<Output = Self::ReaderGuard<'g>>
+    ) -> impl TrSyncTask<MayCancelOutput = Self::ReaderGuard<'g>>
     where
         'a: 'g
     {
@@ -471,7 +467,7 @@ where
     #[inline(always)]
     fn write<'g>(
         self: Pin<&'g mut Self>,
-    ) -> impl TrSyncTask<Output = Self::WriterGuard<'g>>
+    ) -> impl TrSyncTask<MayCancelOutput = Self::WriterGuard<'g>>
     where
         'a: 'g
     {
@@ -481,7 +477,7 @@ where
     #[inline(always)]
     fn upgradable_read<'g>(
         self: Pin<&'g mut Self>,
-    ) -> impl TrSyncTask<Output = Self::UpgradableGuard<'g>>
+    ) -> impl TrSyncTask<MayCancelOutput = Self::UpgradableGuard<'g>>
     where
         'a: 'g
     {

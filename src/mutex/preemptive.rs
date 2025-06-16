@@ -339,7 +339,7 @@ where
     #[inline]
     fn lock<'g>(
         self: Pin<&'g mut Self>,
-    ) -> impl TrSyncTask<Output = Self::MutexGuard<'g>>
+    ) -> impl TrSyncTask<MayCancelOutput = Self::MutexGuard<'g>>
     where
         'a: 'g
     {
@@ -390,13 +390,13 @@ where
     S: TrMutexSignal<D>,
     O: TrCmpxchOrderings,
 {
-    type Output = MutexGuard<'a, 'g, T, D, B, S, O>;
+    type MayCancelOutput = MutexGuard<'a, 'g, T, D, B, S, O>;
 
     #[inline]
     fn may_cancel_with<C>(
         self,
         cancel: Pin<&mut C>,
-    ) -> impl Try<Output = Self::Output>
+    ) -> impl Try<Output = Self::MayCancelOutput>
     where
         C: TrCancellationToken,
     {

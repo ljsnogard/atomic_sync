@@ -13,7 +13,8 @@
 use funty::{Integral, Unsigned};
 
 use atomex::{
-    x_deps::funty, AtomexPtr, Bitwise, CmpxchResult, StrictOrderings, TrAtomicCell, TrAtomicData, TrAtomicFlags, TrCmpxchOrderings
+    x_deps::funty, AtomexPtr, Bitwise, CmpxchResult, StrictOrderings,
+    TrAtomicCell, TrAtomicData, TrAtomicFlags, TrCmpxchOrderings
 };
 use abs_sync::{
     cancellation::TrCancellationToken,

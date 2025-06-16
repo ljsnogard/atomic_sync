@@ -180,7 +180,7 @@ where
     }
 
     #[inline(always)]
-    pub fn wait(self) -> <Self as TrSyncTask>::Output {
+    pub fn wait(self) -> <Self as TrSyncTask>::MayCancelOutput {
         TrSyncTask::wait(self)
     }
 }
@@ -193,13 +193,13 @@ where
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
-    type Output = UpgradableReaderGuard<'a, 'g, T, D, B, O>;
+    type MayCancelOutput = UpgradableReaderGuard<'a, 'g, T, D, B, O>;
 
     #[inline(always)]
     fn may_cancel_with<C>(
         self,
         cancel: Pin<&mut C>,
-    ) -> impl Try<Output = Self::Output>
+    ) -> impl Try<Output = Self::MayCancelOutput>
     where
         C: TrCancellationToken,
     {
@@ -296,7 +296,7 @@ where
     #[inline(always)]
     fn upgrade<'u>(
         self: Pin<&'u mut Self>,
-    ) -> impl TrSyncTask<Output =
+    ) -> impl TrSyncTask<MayCancelOutput =
             <Self::Acquire as TrAcquire<'a, T>>::WriterGuard<'u>>
     where
         'g: 'u,
@@ -360,7 +360,7 @@ where
     }
 
     #[inline(always)]
-    pub fn wait(self) -> <Self as TrSyncTask>::Output {
+    pub fn wait(self) -> <Self as TrSyncTask>::MayCancelOutput {
         TrSyncTask::wait(self)
     }
 }
@@ -373,13 +373,13 @@ where
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
-    type Output = WriterGuard<'a, 'u, T, D, B, O>;
+    type MayCancelOutput = WriterGuard<'a, 'u, T, D, B, O>;
 
     #[inline(always)]
     fn may_cancel_with<C>(
         self,
         cancel: Pin<&mut C>,
-    ) -> impl Try<Output = Self::Output>
+    ) -> impl Try<Output = Self::MayCancelOutput>
     where
         C: TrCancellationToken,
     {

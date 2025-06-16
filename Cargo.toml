@@ -13,7 +13,7 @@ readme = "README.md"
 
 [dependencies]
 abs_sync = { git = "https://github.com/ljsnogard/abs_sync.git", branch = "dev/0.2.0" }
-atomex = { git = "https://github.com/ljsnogard/atomex-rs.git", branch = "dev/0.1.1" }
+atomex = { version = "0.1.1" }
 
 pin-utils = { version = "*" }
 
