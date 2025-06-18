@@ -1,6 +1,6 @@
 ﻿[package]
 name = "atomic_sync"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 
 authors = ["lino <lino_snsalias@outlook.com>"]
@@ -12,12 +12,11 @@ license = "MIT/Apache-2.0"
 readme = "README.md"
 
 [dependencies]
-abs_sync = { version = "0.2.0" }
+abs_sync = { git = "https://github.com/ljsnogard/abs_sync.git", branch = "dev/0.3.0" }
 atomex = { version = "0.1.1" }
 
-pin-utils = { version = "0.1.0" }
-
 [dev-dependencies]
+rand = { version = "0.9" }
 futures-lite = { version = "2" }
 env_logger = { version = "0.11.*" }
 log = { version = "0.4.*" }

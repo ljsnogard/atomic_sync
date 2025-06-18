@@ -1,17 +1,11 @@
 ﻿use std::{
-    ops::{ControlFlow, DerefMut, Try},
-    sync::Arc,
-    thread,
-    vec::Vec,
+    ops::{ControlFlow, DerefMut, Try}, sync::Arc, thread, time::Duration, vec::Vec
 };
 
 use abs_sync::{
-    cancellation as mod_can,
-    sync_mutex::{TrAcquire, TrSyncMutex},
-    sync_tasks::TrSyncTask,
+    may_break::TrMayBreak,
+    sync_mutex::{TrSyncMutex, TrSyncMutexAcquire},
 };
-
-use pin_utils::pin_mut;
 
 fn init_env_logger_() {
     let _ = env_logger::builder().is_test(true).try_init();
@@ -28,15 +22,15 @@ where
     const SECRET: usize = 58;
 
     let mutex = new_mutex(ANSWER);
-    let acquire = mutex.acquire();
-    pin_mut!(acquire);
+    let mut acquire = mutex.acquire();
+
     unsafe {
-        let mut m = ManuallyDrop::new(acquire.as_mut().lock().wait());
+        let mut m = ManuallyDrop::new(acquire.lock().wait_or(|| panic!()));
         assert_eq!(as_mut_ptr(&mutex).read(), ANSWER);
         as_mut_ptr(&mutex).write(SECRET);
         ManuallyDrop::drop(&mut m);
     }
-    assert_eq!(*acquire.as_mut().lock().wait(), SECRET);
+    assert_eq!(*acquire.lock().wait_or(|| panic!()), SECRET);
 }
 
 pub(crate) fn try_acquired_smoke<M>(new_mutex: impl FnOnce(usize) -> M)
@@ -44,9 +38,8 @@ where
     M: TrSyncMutex<Target = usize>,
 {
     let mutex = new_mutex(1);
-    let acq = mutex.acquire();
-    pin_mut!(acq);
-    let ControlFlow::Continue(guard) = Try::branch(acq.as_mut().try_lock())
+    let mut acq = mutex.acquire();
+    let ControlFlow::Continue(guard) = Try::branch(acq.try_lock())
     else {
         panic!("try_lock failed");
     };
@@ -119,32 +112,34 @@ where
         TMutex: TrSyncMutex<Target = usize>,
     {
         let mut c = 0usize;
-        let id = &mutex;
+        let id = std::thread::current().id();
         let mut vec = Vec::with_capacity(1);
-        let acq = mutex.acquire();
-        pin_mut!(acq);
-        let mut cancel = mod_can::CancelledToken::pinned();
+        let mut acq = mutex.acquire();
+
+        log::info!("{id:?} started");
         loop {
             c += 1usize;
-            let acq = acq
-                .as_mut()
-                .lock()
-                .may_cancel_with(cancel.as_mut());
-            let ControlFlow::Continue(mut guard) = acq.branch() else {
-                // log::trace!("{id:p} #{c} vec.len({}) no guard acquired", vec.len());
+            let vlen = vec.len();
+            let ControlFlow::Continue(mut guard) = acq.try_lock().branch() else {
+                log::trace!("{id:?} #{c} vec.len({vlen}) no guard acquired");
                 continue;
             };
             let v = guard.deref_mut();
             if *v >= max {
-                log::info!("{id:p} #{c} vec.len({}) exit with v({})", vec.len(), *v);
+                log::info!("{id:?} #{c} vec.len({vlen}) exit with v({})", *v);
                 break;
             }
-            log::trace!("{id:p} #{c} max({max}) v({}) {}", *v, expect(*v));
-            if expect(*v) {
+            let is_expecting = expect(*v);
+            log::trace!("{id:?} #{c} max({max}), v({}), is_expecting: {is_expecting}", *v);
+            if is_expecting {
                 *v = desire(*v);
                 vec.push(*v);
             }
-            // thread::sleep(SLEEP_DUR);
+            drop(guard);
+
+            let sleep_dur: Duration = Duration::from_millis(rand::random_range(50..100));
+            thread::yield_now();
+            thread::sleep(sleep_dur);
         }
         vec
     }

@@ -5,8 +5,6 @@
     marker::{PhantomData, PhantomPinned},
     mem::ManuallyDrop,
     ops::Try,
-    pin::Pin,
-    ptr::NonNull,
     sync::atomic::*,
 };
 
@@ -19,15 +17,15 @@ use atomex::{
 };
 use abs_sync::{
     cancellation::TrCancellationToken,
-    sync_lock::{self, TrSyncRwLock},
-    sync_tasks::TrSyncTask,
+    may_break::TrMayBreak,
+    sync_lock::*,
 };
 
-use crate::rwlock::BorrowPinMut;
+use crate::rwlock::TrShareMut;
 use super::{
-    reader_::{ReadTask, ReaderGuard},
-    writer_::{WriteTask, WriterGuard},
-    upgrade_::{UpgradableReadTask, UpgradableReaderGuard},
+    reader_::{MayBreakRead, ReaderGuard},
+    writer_::{MayBreakWrite, WriterGuard},
+    upgrade_::{MayBreakUpgradableRead, UpgradableReaderGuard},
 };
 
 pub type SpinningRwLockBorrowed<'a, T, C = AtomicUsize, O = StrictOrderings> =
@@ -109,30 +107,26 @@ where
     /// ## Example
     /// 
     /// ```
-    /// use pin_utils::pin_mut;
     /// use atomic_sync::rwlock::preemptive::SpinningRwLockOwned;
     ///
     /// let lock = SpinningRwLockOwned::<()>::new_owned(());
     /// assert_eq!(lock.reader_count(), 0);
     ///
-    /// let acq0 = lock.acquire();
-    /// pin_mut!(acq0);
-    /// let r0 = acq0.upgradable_read().wait();
+    /// let mut acq0 = lock.acquire();
+    /// let r0 = acq0.upgradable_read().wait_or(|| unreachable!());
     /// assert_eq!(lock.reader_count(), 1);
     /// 
-    /// let acq1 = lock.acquire();
-    /// pin_mut!(acq1);
-    /// let r1 = acq1.read().wait();
+    /// let mut acq1 = lock.acquire();
+    /// let r1 = acq1.read().wait_or(|| unreachable!());
     /// assert_eq!(lock.reader_count(), 2);
     /// 
-    /// let upg = r0.upgrade();
-    /// pin_mut!(upg);
+    /// let mut upg = r0.upgrade();
     /// assert_eq!(lock.reader_count(), 2);
     ///
     /// drop(r1);
     /// assert_eq!(lock.reader_count(), 1);
     ///
-    /// let writer_guard = upg.upgrade().wait();
+    /// let writer_guard = upg.upgrade().wait_or(|| unreachable!());
     /// assert_eq!(lock.reader_count(), 1);
     /// ```
     pub fn reader_count(&self) -> usize {
@@ -159,14 +153,12 @@ where
     /// # Example
     /// ```
     /// use core::mem::ManuallyDrop;
-    /// use pin_utils::pin_mut;
     /// use atomic_sync::rwlock::preemptive::SpinningRwLockOwned;
     ///
     /// let lock = SpinningRwLockOwned::<usize>::new_owned(42);
-    /// let acq = lock.acquire();
-    /// pin_mut!(acq);
+    /// let mut acq = lock.acquire();
     /// unsafe {
-    ///     let mut m = ManuallyDrop::new(acq.as_mut().write().wait());
+    ///     let mut m = ManuallyDrop::new(acq.write().wait_or(|| unreachable!()));
     ///
     ///     assert_eq!(lock.as_mut_ptr().read(), 42);
     ///     lock.as_mut_ptr().write(58);
@@ -174,9 +166,9 @@ where
     ///     ManuallyDrop::drop(&mut m);
     /// }
     ///
-    /// assert_eq!(*(acq.as_mut().read().wait()), 58);
+    /// assert_eq!(*(acq.read().wait_or(|| unreachable!())), 58);
     /// ```
-    #[inline(always)]
+    #[inline]
     pub fn as_mut_ptr(&self) -> *mut T {
         self.data_.get()
     }
@@ -197,7 +189,7 @@ where
     type Target = T;
 
     #[inline]
-    fn acquire(&self) -> impl sync_lock::TrAcquire<'_, Self::Target> {
+    fn acquire(&self) -> impl TrSyncRwLockAcquire<'_, Self::Target> {
         SpinningRwLock::acquire(self)
     }
 }
@@ -244,7 +236,7 @@ where
     }
 
     pub fn try_read(
-        self: Pin<&mut Self>,
+        &mut self,
     ) -> Option<ReaderGuard<'a, '_, T, D, B, O>> {
         if self.0.state_().try_read() {
             Option::Some(ReaderGuard::new(self))
@@ -254,7 +246,7 @@ where
     }
 
     pub fn try_write(
-        self: Pin<&mut Self>,
+        &mut self,
     ) -> Option<WriterGuard<'a, '_, T, D, B, O>> {
         if self.0.state_().try_write() {
             Option::Some(WriterGuard::new(self))
@@ -264,7 +256,7 @@ where
     }
 
     pub fn try_upgradable_read(
-        self: Pin<&mut Self>,
+        &mut self,
     ) -> Option<UpgradableReaderGuard<'a, '_, T, D, B, O>> {
         if self.0.state_().try_upgradable_read() {
             Option::Some(UpgradableReaderGuard::new(self))
@@ -274,20 +266,20 @@ where
     }
 
     #[inline]
-    pub fn read(self: Pin<&mut Self>) -> ReadTask<'a, '_, T, D, B, O> {
-        ReadTask::new(self)
+    pub fn read(&mut self) -> MayBreakRead<'a, '_, T, D, B, O> {
+        MayBreakRead::new(self)
     }
 
     #[inline]
-    pub fn write(self: Pin<&mut Self>) -> WriteTask<'a, '_, T, D, B, O> {
-        WriteTask::new(self)
+    pub fn write(&mut self) -> MayBreakWrite<'a, '_, T, D, B, O> {
+        MayBreakWrite::new(self)
     }
 
     #[inline]
     pub fn upgradable_read(
-        self: Pin<&mut Self>,
-    ) -> UpgradableReadTask<'a, '_, T, D, B, O> {
-        UpgradableReadTask::new(self)
+        &mut self,
+    ) -> MayBreakUpgradableRead<'a, '_, T, D, B, O> {
+        MayBreakUpgradableRead::new(self)
     }
 }
 
@@ -343,72 +335,59 @@ where
             UpgradableReaderGuard<'a, 'g, T, D, B, O>,
         >
     {
-        let guard_pin = unsafe {
-            let mut p = NonNull::new_unchecked(&mut guard);
-            Pin::new_unchecked(p.as_mut())
-        };
-        if let Option::Some(g) = Self::try_upgrade_pinned_to_writer(guard_pin) {
+        let guard_ptr = &mut guard as *mut UpgradableReaderGuard<'a, 'g, T, D, B, O>;
+        if let Option::Some(g) = Self::try_upgrade_mut_to_writer(unsafe { &mut *guard_ptr }) {
             Result::Ok(g)
         } else {
             Result::Err(guard)
         }
     }
 
-    pub(super) fn try_upgrade_pinned_to_writer<'g, 'u>(
-        mut guard: Pin<&'u mut UpgradableReaderGuard<'a, 'g, T, D, B, O>>,
+    pub(super) fn try_upgrade_mut_to_writer<'g, 'u>(
+        guard: &'u mut UpgradableReaderGuard<'a, 'g, T, D, B, O>,
     ) -> Option<WriterGuard<'a, 'u, T, D, B, O>> {
-        let acq_pin = guard.borrow_pin_mut();
-        let lock = acq_pin.0;
+        let acq_mut = guard.share_mut();
+        let lock = acq_mut.0;
         if lock.state_().try_upgrade_upgradable_to_write() {
-            let acquire = unsafe {
-                let ptr = acq_pin.as_mut().get_unchecked_mut();
-                let mut p = NonNull::new_unchecked(ptr);
-                Pin::new_unchecked(p.as_mut())
-            };
-            Option::Some(WriterGuard::new(acquire))
+            Option::Some(WriterGuard::new(acq_mut))
         } else {
             Option::None
         }
     }
 
-    fn destruct_guard_<'g, G>(guard: G) -> Pin<&'g mut Self>
+    fn destruct_guard_<'g, G>(guard: G) -> &'g mut Self
     where
         Self: 'g,
-        G: BorrowPinMut<'g, Self>,
+        G: TrShareMut<'g, Self>,
     {
         let mut m = ManuallyDrop::new(guard);
-        let pin = (*m).borrow_pin_mut().as_mut();
-        unsafe {
-            let ptr = pin.get_unchecked_mut();
-            let mut p = NonNull::new_unchecked(ptr);
-            Pin::new_unchecked(p.as_mut())
-        }
+        (*m).share_mut()
     }
 
     pub(super) fn deref_impl(&self) -> &T {
         unsafe { &*self.0.data_.get() }
     }
 
-    pub(super) fn deref_mut_impl(self: Pin<&mut Self>) -> &mut T {
+    pub(super) fn deref_mut_impl(&mut self) -> &mut T {
         unsafe { &mut *self.0.data_.get() }
     }
 
-    pub(super) fn drop_reader_guard(self: Pin<&mut Self>) {
+    pub(super) fn drop_reader_guard(&mut self) {
         let x = self.0.stat_.decrease_reader_count();
         debug_assert!(x.is_ok())
     }
 
-    pub(super) fn drop_writer_guard(self: Pin<&mut Self>) {
+    pub(super) fn drop_writer_guard(&mut self) {
         self.0.stat_.on_writer_guard_drop()
     }
 
-    pub(super) fn drop_upgradable_read_guard(self: Pin<&mut Self>) {
+    pub(super) fn drop_upgradable_read_guard(&mut self) {
         let x = self.0.stat_.on_upgradable_read_drop();
         debug_assert!(x);
     }
 }
 
-impl<'a, T, D, B, O> sync_lock::TrAcquire<'a, T> for Acquire<'a, T, D, B, O>
+impl<'a, T, D, B, O> TrSyncRwLockAcquire<'a, T> for Acquire<'a, T, D, B, O>
 where
     Self: 'a,
     T: ?Sized,
@@ -421,65 +400,60 @@ where
 
     type WriterGuard<'g> = WriterGuard<'a, 'g, T, D, B, O> where 'a: 'g;
 
-    type UpgradableGuard<'g> =
-            UpgradableReaderGuard<'a, 'g, T, D, B, O> where 'a: 'g;
+    type UpgradableGuard<'g> = UpgradableReaderGuard<'a, 'g, T, D, B, O> where 'a: 'g;
 
-    #[inline(always)]
-    fn try_read<'g>(
-        self: Pin<&'g mut Self>,
-    ) -> impl Try<Output = Self::ReaderGuard<'g>>
+    #[inline]
+    fn try_read<'g>(&'g mut self) -> impl Try<Output = Self::ReaderGuard<'g>>
     where
         'a: 'g,
     {
         Acquire::try_read(self)
     }
 
-    #[inline(always)]
-    fn try_write<'g>(
-        self: Pin<&'g mut Self>,
-    ) -> impl Try<Output = Self::WriterGuard<'g>>
+    #[inline]
+    fn try_write<'g>(&'g mut self) -> impl Try<Output = Self::WriterGuard<'g>>
     where
-        'a: 'g
+        'a: 'g,
     {
         Acquire::try_write(self)
     }
 
-    #[inline(always)]
+    #[inline]
     fn try_upgradable_read<'g>(
-        self: Pin<&'g mut Self>,
+        &'g mut self,
     ) -> impl Try<Output = Self::UpgradableGuard<'g>>
     where
-        'a: 'g
+        'a: 'g,
     {
         Acquire::try_upgradable_read(self)
     }
 
-    #[inline(always)]
+    #[inline]
     fn read<'g>(
-        self: Pin<&'g mut Self>,
-    ) -> impl TrSyncTask<MayCancelOutput = Self::ReaderGuard<'g>>
+        &'g mut self,
+    ) -> impl TrMayBreak<MayBreakOutput: Try<Output = Self::ReaderGuard<'g>>>
     where
-        'a: 'g
+        'a: 'g,
     {
         Acquire::read(self)
     }
 
-    #[inline(always)]
+    #[inline]
     fn write<'g>(
-        self: Pin<&'g mut Self>,
-    ) -> impl TrSyncTask<MayCancelOutput = Self::WriterGuard<'g>>
+        &'g mut self,
+    ) -> impl TrMayBreak<MayBreakOutput: Try<Output = Self::WriterGuard<'g>>>
     where
-        'a: 'g
+        'a: 'g,
     {
         Acquire::write(self)
     }
 
-    #[inline(always)]
+    #[inline]
     fn upgradable_read<'g>(
-        self: Pin<&'g mut Self>,
-    ) -> impl TrSyncTask<MayCancelOutput = Self::UpgradableGuard<'g>>
+        &'g mut self,
+    ) -> impl TrMayBreak<MayBreakOutput: Try<Output = Self::UpgradableGuard<'g>>>
     where
-        'a: 'g
+        'a: 'g,
     {
         Acquire::upgradable_read(self)
     }
@@ -526,22 +500,22 @@ where
     // const K_NOT_LOCKED: D = D::ZERO;
 
     #[allow(non_snake_case)]
-    #[inline(always)]
+    #[inline]
     fn K_WRITER_ACTIVE() -> D {
         D::ONE << (D::BITS - 1)
     }
     #[allow(non_snake_case)]
-    #[inline(always)]
+    #[inline]
     fn K_WRITER_QUEUED() -> D {
         D::ONE << (D::BITS - 2)
     }
     #[allow(non_snake_case)]
-    #[inline(always)]
+    #[inline]
     fn K_UPGRADE_ACTIVE() -> D {
         D::ONE << (D::BITS - 3)
     }
     #[allow(non_snake_case)]
-    #[inline(always)]
+    #[inline]
     fn K_MAX_READER_COUNT() -> D {
         D::MAX >> 3
     }
@@ -776,15 +750,16 @@ where
 }
 
 type FpTryAcquire<'a, 'g, T, B, D, O, X> =
-    fn(Pin<&'g mut Acquire<'a, T, D, B, O>>) -> Option<X>;
+    fn(&'g mut Acquire<'a, T, D, B, O>) -> Option<X>;
 
-pub(super) fn may_cancel_with_impl_<'a, 'g, TTask, T, B, D, O, C, X>(
+pub(super) fn may_break_with_impl_<'a, 'g, TTask, T, B, D, O, C, X>(
     mut task: TTask,
-    mut get_pin: impl FnMut(&mut TTask) -> Pin<&mut Acquire<'a, T, D, B, O>>,
+    mut get_acq_mut: impl FnMut(&mut TTask) -> &mut Acquire<'a, T, D, B, O>,
     try_acquire: FpTryAcquire<'a, 'g, T, B, D, O, X>,
-    cancel: Pin<&mut C>,
+    cancel: &mut C,
 ) -> Option<X>
 where
+    TTask: 'g,
     T: ?Sized,
     D: TrAtomicData + Unsigned,
     <D as TrAtomicData>::AtomicCell: Bitwise,
@@ -792,13 +767,11 @@ where
     O: TrCmpxchOrderings,
     C: TrCancellationToken,
 {
+    let tp = &mut task as *mut TTask;
     loop {
-        let pin = unsafe {
-            let ptr = get_pin(&mut task).get_unchecked_mut();
-            let mut p = NonNull::new_unchecked(ptr);
-            Pin::new_unchecked(p.as_mut())
-        };
-        if let Option::Some(g) = try_acquire(pin) {
+        let task_mut = unsafe { &mut *tp };
+        let acq_mut = get_acq_mut(task_mut);
+        if let Option::Some(g) = try_acquire(acq_mut) {
             break Option::Some(g);
         };
         if cancel.is_cancelled() {

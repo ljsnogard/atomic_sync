@@ -3,7 +3,6 @@
     cell::UnsafeCell,
     marker::PhantomData,
     ops::{Deref, DerefMut, Try},
-    pin::Pin,
     sync::atomic::*,
 };
 
@@ -16,8 +15,8 @@ use atomex::{
 };
 use abs_sync::{
     cancellation::TrCancellationToken,
-    sync_mutex::{self, TrMutexGuard, TrSyncMutex},
-    sync_tasks::TrSyncTask
+    may_break::TrMayBreak,
+    sync_mutex::*,
 };
 
 /// An helper trait to define spinlock behaviour
@@ -220,7 +219,7 @@ where
     type Target = T;
 
     #[inline]
-    fn acquire(&self) -> impl sync_mutex::TrAcquire<'_, Self::Target> {
+    fn acquire(&self) -> impl TrSyncMutexAcquire<'_, Self::Target> {
         SpinningMutex::acquire(self)
     }
 }
@@ -259,12 +258,12 @@ where
     S: TrMutexSignal<D>,
     O: TrCmpxchOrderings,
 {
-    pub fn lock(self: Pin<&mut Self>) -> LockAcqTask<'a, '_, T, D, B, S, O> {
-        LockAcqTask(self)
+    pub fn lock(&mut self) -> MayBreakLock<'a, '_, T, D, B, S, O> {
+        MayBreakLock(self)
     }
 
     pub fn try_lock<'g>(
-        self: Pin<&'g mut Self>,
+        &'g mut self,
     ) -> Option<MutexGuard<'a, 'g, T, D, B, S, O>> {
         self.0
             .try_once_compare_exchange_weak(
@@ -280,8 +279,8 @@ where
     }
 
     fn try_spin_acquire_<'g, 'c, C>(
-        self: Pin<&'g mut Self>,
-        cancel: Pin<&'c mut C>,
+        &'g mut self,
+        cancel: &'c mut C,
     ) -> Option<MutexGuard<'a, 'g, T, D, B, S, O>>
     where
         'g: 'c,
@@ -294,11 +293,12 @@ where
                 S::is_released,
                 S::make_acquired,
             ) {
+                CmpxchResult::Unexpected(_) =>
+                    continue,
                 CmpxchResult::Succ(_) =>
                     break Option::Some(MutexGuard::new(self)),
                 CmpxchResult::Fail(x) =>
                     current = x,
-                CmpxchResult::Unexpected(_) => (),
             }
             if cancel.is_cancelled() {
                 break Option::None
@@ -315,7 +315,7 @@ where
     }
 }
 
-impl<'a, T, D, B, S, O> sync_mutex::TrAcquire<'a, T>
+impl<'a, T, D, B, S, O> TrSyncMutexAcquire<'a, T>
 for Acquire<'a, T, D, B, S, O>
 where
     T: ?Sized,
@@ -324,30 +324,28 @@ where
     S: TrMutexSignal<D>,
     O: TrCmpxchOrderings,
 {
-    type MutexGuard<'g> = MutexGuard<'a, 'g, T, D, B, S, O> where 'a: 'g;
+    type Guard<'g> = MutexGuard<'a, 'g, T, D, B, S, O> where 'a: 'g;
 
     #[inline]
-    fn try_lock<'g>(
-        self: Pin<&'g mut Self>,
-    ) -> impl Try<Output = Self::MutexGuard<'g>>
+    fn try_lock<'g>(&'g mut self) -> impl Try<Output = Self::Guard<'g>>
     where
-        'a: 'g
+        'a: 'g,
     {
         Acquire::try_lock(self)
     }
 
     #[inline]
     fn lock<'g>(
-        self: Pin<&'g mut Self>,
-    ) -> impl TrSyncTask<MayCancelOutput = Self::MutexGuard<'g>>
+        &'g mut self,
+    ) -> impl TrMayBreak<MayBreakOutput: Try<Output = Self::Guard<'g>>>
     where
-        'a: 'g
+        'a: 'g,
     {
         Acquire::lock(self)
     }
 }
 
-pub struct LockAcqTask<'a, 'g, T, D, B, S, O>(Pin<&'g mut Acquire<'a, T, D, B, S, O>>)
+pub struct MayBreakLock<'a, 'g, T, D, B, S, O>(&'g mut Acquire<'a, T, D, B, S, O>)
 where
     'a: 'g,
     T: ?Sized,
@@ -356,7 +354,7 @@ where
     S: TrMutexSignal<D>,
     O: TrCmpxchOrderings;
 
-impl<'a, 'g, T, D, B, S, O> LockAcqTask<'a, 'g, T, D, B, S, O>
+impl<'a, 'g, T, D, B, S, O> MayBreakLock<'a, 'g, T, D, B, S, O>
 where
     'a: 'g,
     T: ?Sized,
@@ -365,9 +363,9 @@ where
     S: TrMutexSignal<D>,
     O: TrCmpxchOrderings,
 {
-    pub fn may_cancel_with<C>(
+    pub fn may_break_with<C>(
         self,
-        cancel: Pin<&mut C>,
+        cancel: &mut C,
     ) -> Option<MutexGuard<'a, 'g, T, D, B, S, O>>
     where
         C: TrCancellationToken,
@@ -376,12 +374,12 @@ where
     }
 
     #[inline]
-    pub fn wait(self) -> MutexGuard<'a, 'g, T, D, B, S, O> {
-        TrSyncTask::wait(self)
+    pub fn wait(self) -> Option<MutexGuard<'a, 'g, T, D, B, S, O>> {
+        TrMayBreak::wait(self)
     }
 }
 
-impl<'a, 'g, T, D, B, S, O> TrSyncTask for LockAcqTask<'a, 'g, T, D, B, S, O>
+impl<'a, 'g, T, D, B, S, O> TrMayBreak for MayBreakLock<'a, 'g, T, D, B, S, O>
 where
     'a: 'g,
     T: ?Sized,
@@ -390,21 +388,21 @@ where
     S: TrMutexSignal<D>,
     O: TrCmpxchOrderings,
 {
-    type MayCancelOutput = MutexGuard<'a, 'g, T, D, B, S, O>;
+    type MayBreakOutput = Option<MutexGuard<'a, 'g, T, D, B, S, O>>;
 
     #[inline]
-    fn may_cancel_with<C>(
+    fn may_break_with<C>(
         self,
-        cancel: Pin<&mut C>,
-    ) -> impl Try<Output = Self::MayCancelOutput>
+        cancel: &mut C,
+    ) -> Self::MayBreakOutput
     where
         C: TrCancellationToken,
     {
-        LockAcqTask::may_cancel_with(self, cancel)
+        MayBreakLock::may_break_with(self, cancel)
     }
 }
 
-pub struct MutexGuard<'a, 'g, T, D, B, S, O>(Pin<&'g mut Acquire<'a, T, D, B, S, O>>)
+pub struct MutexGuard<'a, 'g, T, D, B, S, O>(&'g mut Acquire<'a, T, D, B, S, O>)
 where
     'a: 'g,
     T: ?Sized,
@@ -423,7 +421,7 @@ where
     O: TrCmpxchOrderings,
 {
     pub(super) fn new(
-        acquire: Pin<&'g mut Acquire<'a, T, D, B, S, O>>,
+        acquire: &'g mut Acquire<'a, T, D, B, S, O>,
     ) -> Self {
         MutexGuard(acquire)
     }
@@ -481,7 +479,18 @@ where
     }
 }
 
-impl<'a, 'g, T, D, B, S, O> TrMutexGuard<'a, 'g, T>
+impl<'a, 'g, T, D, B, S, O> TrAcqRefGuard<'a, 'g, T>
+for MutexGuard<'a, 'g, T, D, B, S, O>
+where
+    'a: 'g,
+    T: ?Sized,
+    D: TrAtomicData + Copy,
+    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
+    S: TrMutexSignal<D>,
+    O: TrCmpxchOrderings,
+{}
+
+impl<'a, 'g, T, D, B, S, O> TrAcqMutGuard<'a, 'g, T>
 for MutexGuard<'a, 'g, T, D, B, S, O>
 where
     'a: 'g,
@@ -512,7 +521,7 @@ mod tests_ {
         sync::Arc,
         sync::atomic::{AtomicUsize, AtomicPtr, Ordering},
     };
-    use pin_utils::pin_mut;
+
     use atomex::{LocksOrderings, StrictOrderings};
     use crate::{mutex::smoke_tests_, x_deps::atomex};
     use super::{
@@ -571,9 +580,8 @@ mod tests_ {
             ::<&mut usize, AtomicPtr<usize>, PtrAsMutexSignal<usize>, StrictOrderings>
             ::new(&mut data, &mut cell);
 
-        let acq = lock.acquire();
-        pin_mut!(acq);
-        let g = acq.as_mut().lock().wait();
+        let mut acq = lock.acquire();
+        let g = acq.lock().wait().unwrap();
         assert_eq!(**g, ANSWER);
         drop(g);
         assert!(ptr::eq(ptr, cell.load(Ordering::Relaxed)))

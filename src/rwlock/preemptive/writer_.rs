@@ -1,7 +1,6 @@
 ﻿use core::{
     borrow::BorrowMut,
-    ops::{Deref, DerefMut, Try},
-    pin::Pin,
+    ops::{Deref, DerefMut},
 };
 
 use funty::Unsigned;
@@ -11,19 +10,19 @@ use atomex::{
 };
 use abs_sync::{
     cancellation::TrCancellationToken,
-    sync_lock::{self, TrAcquire},
-    sync_tasks::TrSyncTask,
+    may_break::TrMayBreak,
+    sync_lock::*,
 };
 
-use crate::rwlock::BorrowPinMut;
+use crate::rwlock::TrShareMut;
 use super::{
-    rwlock_::{Acquire, may_cancel_with_impl_},
+    rwlock_::{Acquire, may_break_with_impl_},
     reader_::ReaderGuard,
     upgrade_::UpgradableReaderGuard,
 };
 
 #[derive(Debug)]
-pub struct WriterGuard<'a, 'g, T, D, B, O>(Pin<&'g mut Acquire<'a, T, D, B, O>>)
+pub struct WriterGuard<'a, 'g, T, D, B, O>(&'g mut Acquire<'a, T, D, B, O>)
 where
     T: 'a + ?Sized,
     D: TrAtomicData + Unsigned,
@@ -40,7 +39,7 @@ where
     O: TrCmpxchOrderings,
 {
     pub(super) fn new(
-        acquire: Pin<&'g mut Acquire<'a, T, D, B, O>>,
+        acquire: &'g mut Acquire<'a, T, D, B, O>,
     ) -> Self {
         WriterGuard(acquire)
     }
@@ -65,11 +64,11 @@ where
     O: TrCmpxchOrderings,
 {
     fn drop(&mut self) {
-        self.0.as_mut().drop_writer_guard()
+        self.0.drop_writer_guard()
     }
 }
 
-impl<'a, 'g, T, D, B, O> BorrowPinMut<'g, Acquire<'a, T, D, B, O>>
+impl<'a, 'g, T, D, B, O> TrShareMut<'g, Acquire<'a, T, D, B, O>>
 for WriterGuard<'a, 'g, T, D, B, O>
 where
     T: 'a + ?Sized,
@@ -78,8 +77,9 @@ where
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
-    fn borrow_pin_mut(&mut self) -> &mut Pin<&'g mut Acquire<'a, T, D, B, O>> {
-        &mut self.0
+    fn share_mut(&mut self) -> &'g mut Acquire<'a, T, D, B, O> {
+        let p = self.0 as *mut _;
+        unsafe { &mut *p }
     }
 }
 
@@ -107,12 +107,29 @@ where
     O: TrCmpxchOrderings,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.0.as_mut().deref_mut_impl()
+        self.0.deref_mut_impl()
     }
 }
 
-impl<'a, 'g, T, D, B, O> sync_lock::TrReaderGuard<'a, 'g, T>
-for WriterGuard<'a, 'g, T, D, B, O>
+impl<'a, 'g, T, D, B, O> TrAcqRefGuard<'a, 'g, T> for WriterGuard<'a, 'g, T, D, B, O>
+where
+    T: 'a + ?Sized,
+    D: TrAtomicData + Unsigned,
+    <D as TrAtomicData>::AtomicCell: Bitwise,
+    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
+    O: TrCmpxchOrderings,
+{}
+
+impl<'a, 'g, T, D, B, O> TrAcqMutGuard<'a, 'g, T> for WriterGuard<'a, 'g, T, D, B, O>
+where
+    T: 'a + ?Sized,
+    D: TrAtomicData + Unsigned,
+    <D as TrAtomicData>::AtomicCell: Bitwise,
+    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
+    O: TrCmpxchOrderings,
+{}
+
+impl<'a, 'g, T, D, B, O> TrSyncReaderGuard<'a, 'g, T> for WriterGuard<'a, 'g, T, D, B, O>
 where
     T: 'a + ?Sized,
     D: TrAtomicData + Unsigned,
@@ -123,7 +140,7 @@ where
     type Acquire = Acquire<'a, T, D, B, O>;
 }
 
-impl<'a, 'g, T, D, B, O> sync_lock::TrWriterGuard<'a, 'g, T>
+impl<'a, 'g, T, D, B, O> TrSyncWriterGuard<'a, 'g, T>
 for WriterGuard<'a, 'g, T, D, B, O>
 where
     T: 'a + ?Sized,
@@ -135,19 +152,19 @@ where
     #[inline(always)]
     fn downgrade_to_reader(
         self,
-    ) -> <Self::Acquire as TrAcquire<'a, T>>::ReaderGuard<'g> {
+    ) -> <Self::Acquire as TrSyncRwLockAcquire<'a, T>>::ReaderGuard<'g> {
         WriterGuard::downgrade_to_reader(self)
     }
 
     #[inline(always)]
     fn downgrade_to_upgradable(
         self,
-    ) -> <Self::Acquire as TrAcquire<'a, T>>::UpgradableGuard<'g> {
+    ) -> <Self::Acquire as TrSyncRwLockAcquire<'a, T>>::UpgradableGuard<'g> {
         WriterGuard::downgrade_to_upgradable(self)
     }
 }
 
-pub struct WriteTask<'a, 'g, T, D, B, O>(Pin<&'g mut Acquire<'a, T, D, B, O>>)
+pub struct MayBreakWrite<'a, 'g, T, D, B, O>(&'g mut Acquire<'a, T, D, B, O>)
 where
     T: ?Sized,
     D: TrAtomicData + Unsigned,
@@ -155,7 +172,7 @@ where
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings;
 
-impl<'a, 'g, T, D, B, O> WriteTask<'a, 'g, T, D, B, O>
+impl<'a, 'g, T, D, B, O> MayBreakWrite<'a, 'g, T, D, B, O>
 where
     T: ?Sized,
     D: TrAtomicData + Unsigned,
@@ -163,32 +180,41 @@ where
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
-    pub(super) fn new(acquire: Pin<&'g mut Acquire<'a, T, D, B, O>>) -> Self {
-        WriteTask(acquire)
+    pub(super) fn new(acquire: &'g mut Acquire<'a, T, D, B, O>) -> Self {
+        MayBreakWrite(acquire)
     }
 
-    pub fn may_cancel_with<C>(
+    #[inline]
+    pub fn may_break_with<C>(
         self,
-        cancel: Pin<&mut C>,
+        cancel: &mut C,
     ) -> Option<WriterGuard<'a, 'g, T, D, B, O>>
     where
         C: TrCancellationToken,
     {
-        may_cancel_with_impl_(
+        may_break_with_impl_(
             self,
-            |t| t.0.as_mut(),
+            |t| t.0,
             Acquire::try_write,
             cancel,
         )
     }
 
-    #[inline(always)]
-    pub fn wait(self) -> <Self as TrSyncTask>::MayCancelOutput {
-        TrSyncTask::wait(self)
+    #[inline]
+    pub fn wait(self) -> Option<WriterGuard<'a, 'g, T, D, B, O>> {
+        TrMayBreak::wait(self)
+    }
+
+    #[inline]
+    pub fn wait_or<F>(self, f: F) -> WriterGuard<'a, 'g, T, D, B, O>
+    where
+        F: FnOnce() -> WriterGuard<'a, 'g, T, D, B, O>
+    {
+        TrMayBreak::wait_or(self, f)
     }
 }
 
-impl<'a, 'g, T, D, B, O> TrSyncTask for WriteTask<'a, 'g, T, D, B, O>
+impl<'a, 'g, T, D, B, O> TrMayBreak for MayBreakWrite<'a, 'g, T, D, B, O>
 where
     T: ?Sized,
     D: TrAtomicData + Unsigned,
@@ -196,30 +222,13 @@ where
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
-    type MayCancelOutput = WriterGuard<'a, 'g, T, D, B, O>;
+    type MayBreakOutput = Option<WriterGuard<'a, 'g, T, D, B, O>>;
 
-    #[inline(always)]
-    fn may_cancel_with<C>(
-        self,
-        cancel: Pin<&mut C>,
-    ) -> impl Try<Output = Self::MayCancelOutput>
+    #[inline]
+    fn may_break_with<C>(self, cancel: &mut C) -> Self::MayBreakOutput
     where
         C: TrCancellationToken,
     {
-        WriteTask::may_cancel_with(self, cancel)
-    }
-}
-
-impl<'a, 'g, T, D, B, O> From<WriteTask<'a, 'g, T, D, B, O>>
-for WriterGuard<'a, 'g, T, D, B, O>
-where
-    T: ?Sized,
-    D: TrAtomicData + Unsigned,
-    <D as TrAtomicData>::AtomicCell: Bitwise,
-    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
-    O: TrCmpxchOrderings,
-{
-    fn from(task: WriteTask<'a, 'g, T, D, B, O>) -> Self {
-        task.wait()
+        MayBreakWrite::may_break_with(self, cancel)
     }
 }
