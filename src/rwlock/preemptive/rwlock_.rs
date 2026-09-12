@@ -11,14 +11,16 @@
 use funty::{Integral, Unsigned};
 
 use atomex::{
+    fetch::Bitwise,
     x_deps::funty,
-    Bitwise, StrictOrderings, TrAtomicCell, TrAtomicData, TrAtomicFlags,
+    StrictOrderings, TrAtomicCell, TrAtomicData, TrAtomicFlags,
     TrCmpxchOrderings,
 };
+use abs_cancel::TrCancellationToken;
 use abs_sync::{
-    cancellation::TrCancellationToken,
     may_break::TrMayBreak,
     sync_lock::*,
+    x_deps::abs_cancel,
 };
 
 use crate::rwlock::TrShareMut;
@@ -103,9 +105,9 @@ where
     /// should be considered 'out of date' the instant it is called. Do not use
     /// it for synchronization purposes. However, it may be useful as a
     /// heuristic.
-    /// 
+    ///
     /// ## Example
-    /// 
+    ///
     /// ```
     /// use atomic_sync::rwlock::preemptive::SpinningRwLockOwned;
     ///
@@ -115,11 +117,11 @@ where
     /// let mut acq0 = lock.acquire();
     /// let r0 = acq0.upgradable_read().wait_or(|| unreachable!());
     /// assert_eq!(lock.reader_count(), 1);
-    /// 
+    ///
     /// let mut acq1 = lock.acquire();
     /// let r1 = acq1.read().wait_or(|| unreachable!());
     /// assert_eq!(lock.reader_count(), 2);
-    /// 
+    ///
     /// let mut upg = r0.upgrade();
     /// assert_eq!(lock.reader_count(), 2);
     ///
@@ -611,7 +613,7 @@ where
     pub fn reader_count(&self) -> D {
         Self::get_reader_count(self.load_state())
     }
- 
+
     pub fn decrease_reader_count(&self) -> Result<D, D> {
         self.try_spin_update_(
                 Self::expect_reader_gt_min,

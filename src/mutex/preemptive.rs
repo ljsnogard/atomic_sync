@@ -1,4 +1,4 @@
-﻿use core::{
+use core::{
     borrow::BorrowMut,
     cell::UnsafeCell,
     marker::PhantomData,
@@ -13,10 +13,11 @@ use atomex::{
     CmpxchResult, StrictOrderings,
     TrAtomicCell, TrAtomicData, TrAtomicFlags, TrCmpxchOrderings,
 };
+use abs_cancel::TrCancellationToken;
 use abs_sync::{
-    cancellation::TrCancellationToken,
     may_break::TrMayBreak,
     sync_mutex::*,
+    x_deps::abs_cancel,
 };
 
 /// An helper trait to define spinlock behaviour
@@ -32,6 +33,7 @@ pub trait TrMutexSignal<V: Copy> {
     fn make_released(val: V) -> V;
 }
 
+/// 升级方向，可以设置某一个 bit 作为 flag
 #[derive(Debug)]
 pub struct MsbAsMutexSignal<V: Unsigned>(PhantomData<V>);
 
@@ -288,20 +290,30 @@ where
     {
         let mut current = self.0.value();
         loop {
+            // Poll the cancellation token on every iteration, before
+            // attempting the CAS, so a pre-cancelled token never acquires
+            // the lock and a cancellation arriving while waiting is honoured
+            // promptly.
+            if cancel.is_cancelled() {
+                break Option::None
+            }
             match self.mutex_().try_once_compare_exchange_weak(
                 current,
                 S::is_released,
                 S::make_acquired,
             ) {
                 CmpxchResult::Unexpected(_) =>
-                    continue,
+                    // The cached `current` no longer satisfies
+                    // `S::is_released` (e.g. another thread acquired the
+                    // lock in the meantime). Reload the actual state so the
+                    // loop keeps making progress and can succeed once the
+                    // lock is released; continuing with the stale value
+                    // would livelock forever.
+                    current = self.0.value(),
                 CmpxchResult::Succ(_) =>
                     break Option::Some(MutexGuard::new(self)),
                 CmpxchResult::Fail(x) =>
                     current = x,
-            }
-            if cancel.is_cancelled() {
-                break Option::None
             }
         }
     }

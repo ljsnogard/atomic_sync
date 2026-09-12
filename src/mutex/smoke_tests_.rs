@@ -94,7 +94,7 @@ where
     assert!(v2.into_iter().all(is_odd));
 
     fn is_even(u: usize) -> bool {
-        u % 2 == 0
+        u.is_multiple_of(2)
     }
     fn is_odd(u: usize) -> bool {
         u % 2 == 1

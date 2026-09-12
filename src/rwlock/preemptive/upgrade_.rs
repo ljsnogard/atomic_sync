@@ -5,13 +5,15 @@
 
 use funty::Unsigned;
 use atomex::{
+    fetch::Bitwise,
     x_deps::funty,
-    Bitwise, TrAtomicData, TrCmpxchOrderings,
+    TrAtomicData, TrCmpxchOrderings,
 };
+use abs_cancel::{NonCancellableToken, TrCancellationToken};
 use abs_sync::{
-    cancellation::{NonCancellableToken, TrCancellationToken},
     may_break::TrMayBreak,
     sync_lock::*,
+    x_deps::abs_cancel,
 };
 
 use crate::rwlock::TrShareMut;
@@ -305,7 +307,7 @@ where
     #[inline]
     fn upgrade<'u>(
         &'u mut self,
-    ) -> impl TrMayBreak<MayBreakOutput: Try<Output = 
+    ) -> impl TrMayBreak<MayBreakOutput: Try<Output =
             <Self::Acquire as TrSyncRwLockAcquire<'a, T>>::WriterGuard<'u>>>
     where
         'g: 'u,

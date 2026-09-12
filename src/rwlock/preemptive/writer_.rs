@@ -5,13 +5,15 @@
 
 use funty::Unsigned;
 use atomex::{
+    fetch::Bitwise,
     x_deps::funty,
-    Bitwise, TrAtomicData, TrCmpxchOrderings,
+    TrAtomicData, TrCmpxchOrderings,
 };
+use abs_cancel::TrCancellationToken;
 use abs_sync::{
-    cancellation::TrCancellationToken,
     may_break::TrMayBreak,
     sync_lock::*,
+    x_deps::abs_cancel,
 };
 
 use crate::rwlock::TrShareMut;

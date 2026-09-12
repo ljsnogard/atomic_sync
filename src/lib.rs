@@ -1,5 +1,5 @@
 ﻿#![no_std]
-#![feature(type_alias_impl_trait)]
+// #![feature(type_alias_impl_trait)]
 #![feature(try_trait_v2)]
 
 // We always pull in `std` during tests, because it's just easier
