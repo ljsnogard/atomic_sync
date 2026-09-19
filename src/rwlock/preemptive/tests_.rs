@@ -14,26 +14,26 @@ fn acquire_reader_guard_should_block_acq_writer_guard() {
     const MYSTERY: usize = ANSWER * ANSWER;
 
     let rwlock = SpinningRwLockOwned::<usize>::new_owned(ANSWER);
-    let mut acq_r0 = rwlock.acquire();
+    let mut acq_r0 = rwlock.acquire_session();
     let r0 = acq_r0.read().wait().unwrap();
     assert_eq!(*r0, ANSWER);
     assert_eq!(rwlock.reader_count(), 1);
 
-    let mut acq_r1 = rwlock.acquire();
+    let mut acq_r1 = rwlock.acquire_session();
     let r1 = acq_r1.read().wait().unwrap();
     assert_eq!(*r1, *r0);
     assert_eq!(rwlock.reader_count(), 2);
 
-    let mut acq_w = rwlock.acquire();
+    let mut acq_w = rwlock.acquire_session();
     let opt_w = acq_w.try_write();
-    assert!(opt_w.is_none());
+    assert!(opt_w.is_err());
 
     drop(opt_w);
     drop(r0);
     assert_eq!(rwlock.reader_count(), 1);
 
     let opt_w = acq_w.try_write();
-    assert!(opt_w.is_none());
+    assert!(opt_w.is_err());
 
     drop(opt_w);
     drop(r1);
@@ -42,7 +42,7 @@ fn acquire_reader_guard_should_block_acq_writer_guard() {
     let opt_w = acq_w.try_write();
     let mut w = opt_w.unwrap();
     assert_eq!(*w, ANSWER);
-    *w = MYSTERY; 
+    *w = MYSTERY;
 
     drop(w);
     assert_eq!(rwlock.into_inner(), MYSTERY);
@@ -54,13 +54,13 @@ fn acquire_reader_guard_should_block_upgrade() {
     const MYSTERY: usize = ANSWER * ANSWER;
 
     let rwlock = SpinningRwLockOwned::<usize>::new_owned(ANSWER);
-    let mut acq_r0 = rwlock.acquire();
+    let mut acq_r0 = rwlock.acquire_session();
 
     let r0 = acq_r0.read().wait().unwrap();
     assert_eq!(*r0, ANSWER);
     assert_eq!(rwlock.reader_count(), 1);
 
-    let mut acq_r1 = rwlock.acquire();
+    let mut acq_r1 = rwlock.acquire_session();
     let r1 = acq_r1.upgradable_read().wait().unwrap();
     assert_eq!(*r1, *r0);
     assert_eq!(rwlock.reader_count(), 2);
@@ -69,7 +69,7 @@ fn acquire_reader_guard_should_block_upgrade() {
     // creating `Upgrade` should not decrease reader count
     assert_eq!(rwlock.reader_count(), 2);
     let opt_u = upg.try_upgrade();
-    assert!(opt_u.is_none());
+    assert!(opt_u.is_err());
 
     drop(opt_u);
     drop(r0);

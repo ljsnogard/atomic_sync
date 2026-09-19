@@ -4,7 +4,7 @@
 
 use abs_sync::{
     may_break::TrMayBreak,
-    sync_mutex::{TrSyncMutex, TrSyncMutexAcquire},
+    sync_mutex::{TrSyncMutex, TrSyncMutexSession},
 };
 
 fn init_env_logger_() {
@@ -22,7 +22,7 @@ where
     const SECRET: usize = 58;
 
     let mutex = new_mutex(ANSWER);
-    let mut acquire = mutex.acquire();
+    let mut acquire = mutex.lock_session();
 
     unsafe {
         let mut m = ManuallyDrop::new(acquire.lock().wait_or(|| panic!()));
@@ -38,7 +38,7 @@ where
     M: TrSyncMutex<Target = usize>,
 {
     let mutex = new_mutex(1);
-    let mut acq = mutex.acquire();
+    let mut acq = mutex.lock_session();
     let ControlFlow::Continue(guard) = Try::branch(acq.try_lock())
     else {
         panic!("try_lock failed");
@@ -114,7 +114,7 @@ where
         let mut c = 0usize;
         let id = std::thread::current().id();
         let mut vec = Vec::with_capacity(1);
-        let mut acq = mutex.acquire();
+        let mut acq = mutex.lock_session();
 
         log::info!("{id:?} started");
         loop {

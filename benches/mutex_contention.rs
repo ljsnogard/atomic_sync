@@ -41,11 +41,11 @@ macro_rules! define_spin_bench {
                     let lock = lock.clone();
                     let barrier = barrier.clone();
                     thread::spawn(move || {
-                        let mut acq = lock.acquire();
+                        let mut acq = lock.lock_session();
                         barrier.wait();
                         let mut done = 0usize;
                         while done < iters {
-                            let Some(mut g) = acq.try_lock() else {
+                            let Result::Ok(mut g) = acq.try_lock() else {
                                 thread::yield_now();
                                 continue;
                             };

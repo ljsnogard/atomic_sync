@@ -2,7 +2,7 @@ use core::{
     borrow::BorrowMut,
     cell::UnsafeCell,
     marker::PhantomData,
-    ops::{Deref, DerefMut, Try},
+    ops::{Deref, DerefMut},
     sync::atomic::*,
 };
 
@@ -20,8 +20,13 @@ use abs_sync::{
     x_deps::abs_cancel,
 };
 
+pub use super::error_::SpinningMutexError;
+
 /// An helper trait to define spinlock behaviour
-pub trait TrMutexSignal<V: Copy> {
+pub trait TrMutexSignal<V>
+where
+    V: Copy,
+{
     fn is_acquired(val: V) -> bool;
 
     fn is_released(val: V) -> bool {
@@ -179,8 +184,8 @@ where
         S::is_acquired(state)
     }
 
-    pub fn acquire(&self) -> Acquire<'_, T, D, B, S, O> {
-        Acquire(self)
+    pub fn lock_session(&self) -> LockSession<'_, T, D, B, S, O> {
+        LockSession(self)
     }
 
     pub fn as_mut_ptr(&self) -> *mut T {
@@ -220,9 +225,13 @@ where
 {
     type Target = T;
 
+    type LockSess<'f> = LockSession<'f, T, D, B, S, O>
+    where
+        Self: 'f;
+
     #[inline]
-    fn acquire(&self) -> impl TrSyncMutexAcquire<'_, Self::Target> {
-        SpinningMutex::acquire(self)
+    fn lock_session(&self) -> Self::LockSess<'_> {
+        SpinningMutex::lock_session(self)
     }
 }
 
@@ -244,20 +253,20 @@ where
     O: TrCmpxchOrderings,
 {}
 
-pub struct Acquire<'a, T, D, B, S, O>(&'a SpinningMutex<T, D, B, S, O>)
+pub struct LockSession<'a, T, D, B, S, O>(&'a SpinningMutex<T, D, B, S, O>)
 where
-    T: ?Sized,
-    D: TrAtomicData + Copy,
-    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
-    S: TrMutexSignal<D>,
+    T: 'a + ?Sized,
+    D: 'a + TrAtomicData + Copy,
+    B: 'a + BorrowMut<<D as TrAtomicData>::AtomicCell>,
+    S: 'a + TrMutexSignal<D>,
     O: TrCmpxchOrderings;
 
-impl<'a, T, D, B, S, O> Acquire<'a, T, D, B, S, O>
+impl<'a, T, D, B, S, O> LockSession<'a, T, D, B, S, O>
 where
-    T: ?Sized,
-    D: TrAtomicData + Copy,
-    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
-    S: TrMutexSignal<D>,
+    T: 'a + ?Sized,
+    D: 'a + TrAtomicData + Copy,
+    B: 'a + BorrowMut<<D as TrAtomicData>::AtomicCell>,
+    S: 'a + TrMutexSignal<D>,
     O: TrCmpxchOrderings,
 {
     pub fn lock(&mut self) -> MayBreakLock<'a, '_, T, D, B, S, O> {
@@ -266,7 +275,7 @@ where
 
     pub fn try_lock<'g>(
         &'g mut self,
-    ) -> Option<MutexGuard<'a, 'g, T, D, B, S, O>> {
+    ) -> Result<MutexGuard<'a, 'g, T, D, B, S, O>, SpinningMutexError> {
         self.0
             .try_once_compare_exchange_weak(
                 self.0.value(),
@@ -274,18 +283,18 @@ where
                 S::make_acquired)
             .succ()
             .map(|_| MutexGuard::new(self))
+            .ok_or(SpinningMutexError::Retry)
     }
 
     fn mutex_(&self) -> &'a SpinningMutex<T, D, B, S, O> {
         self.0
     }
 
-    fn try_spin_acquire_<'g, 'c, C>(
+    fn try_spin_acquire_<'g, C>(
         &'g mut self,
-        cancel: &'c mut C,
-    ) -> Option<MutexGuard<'a, 'g, T, D, B, S, O>>
+        cancel: C,
+    ) -> Result<MutexGuard<'a, 'g, T, D, B, S, O>, SpinningMutexError>
     where
-        'g: 'c,
         C: TrCancellationToken,
     {
         let mut current = self.0.value();
@@ -295,7 +304,7 @@ where
             // the lock and a cancellation arriving while waiting is honoured
             // promptly.
             if cancel.is_cancelled() {
-                break Option::None
+                break Result::Err(SpinningMutexError::Cancelled);
             }
             match self.mutex_().try_once_compare_exchange_weak(
                 current,
@@ -311,7 +320,7 @@ where
                     // would livelock forever.
                     current = self.0.value(),
                 CmpxchResult::Succ(_) =>
-                    break Option::Some(MutexGuard::new(self)),
+                    break Result::Ok(MutexGuard::new(self)),
                 CmpxchResult::Fail(x) =>
                     current = x,
             }
@@ -327,42 +336,46 @@ where
     }
 }
 
-impl<'a, T, D, B, S, O> TrSyncMutexAcquire<'a, T>
-for Acquire<'a, T, D, B, S, O>
+impl<'a, T, D, B, S, O> TrSyncMutexSession<'a, T> for
+    LockSession<'a, T, D, B, S, O>
 where
-    T: ?Sized,
-    D: TrAtomicData + Copy,
-    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
-    S: TrMutexSignal<D>,
+    T: 'a + ?Sized,
+    D: 'a + TrAtomicData + Copy,
+    B: 'a + BorrowMut<<D as TrAtomicData>::AtomicCell>,
+    S: 'a + TrMutexSignal<D>,
     O: TrCmpxchOrderings,
 {
     type Guard<'g> = MutexGuard<'a, 'g, T, D, B, S, O> where 'a: 'g;
 
+    type LockMayBreak<'f> = MayBreakLock<'a, 'f, T, D, B, S, O>
+    where
+        'a: 'f;
+
+    type Err = SpinningMutexError;
+
     #[inline]
-    fn try_lock<'g>(&'g mut self) -> impl Try<Output = Self::Guard<'g>>
+    fn try_lock<'g>(&'g mut self) -> Result<Self::Guard<'g>, Self::Err>
     where
         'a: 'g,
     {
-        Acquire::try_lock(self)
+        LockSession::try_lock(self)
     }
 
     #[inline]
-    fn lock<'g>(
-        &'g mut self,
-    ) -> impl TrMayBreak<MayBreakOutput: Try<Output = Self::Guard<'g>>>
+    fn lock<'g>(&'g mut self) -> Self::LockMayBreak<'g>
     where
         'a: 'g,
     {
-        Acquire::lock(self)
+        LockSession::lock(self)
     }
 }
 
-pub struct MayBreakLock<'a, 'g, T, D, B, S, O>(&'g mut Acquire<'a, T, D, B, S, O>)
+pub struct MayBreakLock<'a, 'g, T, D, B, S, O>(&'g mut LockSession<'a, T, D, B, S, O>)
 where
     'a: 'g,
     T: ?Sized,
     D: TrAtomicData + Copy,
-    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
+    B: 'a + BorrowMut<<D as TrAtomicData>::AtomicCell>,
     S: TrMutexSignal<D>,
     O: TrCmpxchOrderings;
 
@@ -371,14 +384,14 @@ where
     'a: 'g,
     T: ?Sized,
     D: TrAtomicData + Copy,
-    B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
+    B: 'a + BorrowMut<<D as TrAtomicData>::AtomicCell>,
     S: TrMutexSignal<D>,
     O: TrCmpxchOrderings,
 {
     pub fn may_break_with<C>(
         self,
-        cancel: &mut C,
-    ) -> Option<MutexGuard<'a, 'g, T, D, B, S, O>>
+        cancel: C,
+    ) -> Result<MutexGuard<'a, 'g, T, D, B, S, O>, SpinningMutexError>
     where
         C: TrCancellationToken,
     {
@@ -386,7 +399,7 @@ where
     }
 
     #[inline]
-    pub fn wait(self) -> Option<MutexGuard<'a, 'g, T, D, B, S, O>> {
+    pub fn wait(self) -> Result<MutexGuard<'a, 'g, T, D, B, S, O>, SpinningMutexError> {
         TrMayBreak::wait(self)
     }
 }
@@ -400,12 +413,15 @@ where
     S: TrMutexSignal<D>,
     O: TrCmpxchOrderings,
 {
-    type MayBreakOutput = Option<MutexGuard<'a, 'g, T, D, B, S, O>>;
+    type MayBreakOutput = Result<
+        MutexGuard<'a, 'g, T, D, B, S, O>,
+        SpinningMutexError,
+    >;
 
     #[inline]
     fn may_break_with<C>(
         self,
-        cancel: &mut C,
+        cancel: C,
     ) -> Self::MayBreakOutput
     where
         C: TrCancellationToken,
@@ -414,7 +430,7 @@ where
     }
 }
 
-pub struct MutexGuard<'a, 'g, T, D, B, S, O>(&'g mut Acquire<'a, T, D, B, S, O>)
+pub struct MutexGuard<'a, 'g, T, D, B, S, O>(&'g mut LockSession<'a, T, D, B, S, O>)
 where
     'a: 'g,
     T: ?Sized,
@@ -433,7 +449,7 @@ where
     O: TrCmpxchOrderings,
 {
     pub(super) fn new(
-        acquire: &'g mut Acquire<'a, T, D, B, S, O>,
+        acquire: &'g mut LockSession<'a, T, D, B, S, O>,
     ) -> Self {
         MutexGuard(acquire)
     }
@@ -592,7 +608,7 @@ mod tests_ {
             ::<&mut usize, AtomicPtr<usize>, PtrAsMutexSignal<usize>, StrictOrderings>
             ::new(&mut data, &mut cell);
 
-        let mut acq = lock.acquire();
+        let mut acq = lock.lock_session();
         let g = acq.lock().wait().unwrap();
         assert_eq!(**g, ANSWER);
         drop(g);

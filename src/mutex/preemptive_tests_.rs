@@ -113,8 +113,8 @@ fn ptr_signal_odd_cell_breaks_mutex() {
     >::new(&mut data, &mut cell);
 
     assert!(lock.is_acquired());
-    let mut acq = lock.acquire();
-    assert!(acq.try_lock().is_none());
+    let mut acq = lock.lock_session();
+    assert!(acq.try_lock().is_err());
 }
 
 // -------------------------------------------------------------------------
@@ -126,15 +126,15 @@ fn try_lock_lifecycle() {
     let mutex = SpinningMutexOwned::<usize>::new_owned(42);
     assert!(!mutex.is_acquired());
 
-    let mut acq1 = mutex.acquire();
+    let mut acq1 = mutex.lock_session();
     let g = acq1.try_lock().expect("first try_lock should succeed");
     assert!(mutex.is_acquired());
     assert_eq!(*g, 42);
 
     // The lock is held: a second try_lock (via another Acquire handle) must
     // fail without blocking.
-    let mut acq2 = mutex.acquire();
-    assert!(acq2.try_lock().is_none());
+    let mut acq2 = mutex.lock_session();
+    assert!(acq2.try_lock().is_err());
 
     drop(g);
     assert!(!mutex.is_acquired());
@@ -145,7 +145,7 @@ fn try_lock_lifecycle() {
 #[test]
 fn lock_wait_single_thread() {
     let mutex = SpinningMutexOwned::<usize>::new_owned(1);
-    let mut acq = mutex.acquire();
+    let mut acq = mutex.lock_session();
     {
         let mut g = acq.lock().wait().expect("lock().wait()");
         *g += 1;
@@ -168,7 +168,7 @@ fn embedded_new_resets_cell_to_default() {
         &mut cell,
     );
     assert!(!lock.is_acquired());
-    let mut acq = lock.acquire();
+    let mut acq = lock.lock_session();
     let g = acq.try_lock().expect("try_lock after reset");
     assert_eq!(*g, 9);
 }
@@ -190,11 +190,10 @@ fn may_break_precancelled_token_never_acquires() {
     // for signal; a pre-cancelled token must therefore never acquire the
     // lock, even when it is immediately available.
     let mutex = SpinningMutexOwned::<usize>::new_owned(3);
-    let mut acq = mutex.acquire();
-    let mut token = CancelledToken::new();
-    assert!(token.is_cancelled());
-    let g = acq.lock().may_break_with(&mut token);
-    assert!(g.is_none(), "pre-cancelled token must not acquire");
+    let mut acq = mutex.lock_session();
+
+    let g = acq.lock().may_break_with(CancelledToken::new());
+    assert!(g.is_err(), "pre-cancelled token must not acquire");
     assert!(!mutex.is_acquired());
 }
 
@@ -211,12 +210,12 @@ fn contended_increment_3_to_8_threads() {
             .map(|_| {
                 let c = counter.clone();
                 thread::spawn(move || {
-                    let mut acq = c.acquire();
+                    let mut acq = c.lock_session();
                     let mut done = 0usize;
                     while done < iters {
                         // try_lock never livelocks: it is a single CAS
                         // attempt, so busy-waiting with it is safe.
-                        let Some(mut g) = acq.try_lock() else {
+                        let Result::Ok(mut g) = acq.try_lock() else {
                             thread::yield_now();
                             continue;
                         };
@@ -268,7 +267,7 @@ fn lock_wait_acquires_after_holder_releases() {
         let m = mutex.clone();
         let started = started.clone();
         thread::spawn(move || {
-            let mut acq = m.acquire();
+            let mut acq = m.lock_session();
             let _g = acq.lock().wait().unwrap();
             started.store(true, Ordering::SeqCst);
             thread::sleep(Duration::from_millis(300));
@@ -279,7 +278,7 @@ fn lock_wait_acquires_after_holder_releases() {
     }
 
     let rx = held_lock_livelock_probe(move || {
-        let mut acq = mutex.acquire();
+        let mut acq = mutex.lock_session();
         let _g = acq.lock().wait().expect("should eventually acquire");
     });
 
@@ -311,7 +310,7 @@ fn may_break_with_cancelled_token_returns_none_while_held() {
         let m = mutex.clone();
         let started = started.clone();
         thread::spawn(move || {
-            let mut acq = m.acquire();
+            let mut acq = m.lock_session();
             let _g = acq.lock().wait().unwrap();
             started.store(true, Ordering::SeqCst);
             thread::sleep(Duration::from_millis(300));
@@ -322,11 +321,10 @@ fn may_break_with_cancelled_token_returns_none_while_held() {
     }
 
     let rx = held_lock_livelock_probe(move || {
-        let mut acq = mutex.acquire();
-        let mut token = CancelledToken::new();
-        assert!(token.is_cancelled());
-        let g = acq.lock().may_break_with(&mut token);
-        assert!(g.is_none(), "pre-cancelled token must not acquire");
+        let mut acq = mutex.lock_session();
+
+        let g = acq.lock().may_break_with(CancelledToken::new());
+        assert!(g.is_err(), "pre-cancelled token must not acquire");
     });
 
     let timeout = Duration::from_secs(2);

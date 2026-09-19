@@ -4,7 +4,6 @@
     fmt,
     marker::{PhantomData, PhantomPinned},
     mem::ManuallyDrop,
-    ops::Try,
     sync::atomic::*,
 };
 
@@ -18,13 +17,13 @@ use atomex::{
 };
 use abs_cancel::TrCancellationToken;
 use abs_sync::{
-    may_break::TrMayBreak,
-    sync_lock::*,
+    sync_rwlock::*,
     x_deps::abs_cancel,
 };
 
 use crate::rwlock::TrShareMut;
 use super::{
+    error_::SpinningRwLockError,
     reader_::{MayBreakRead, ReaderGuard},
     writer_::{MayBreakWrite, WriterGuard},
     upgrade_::{MayBreakUpgradableRead, UpgradableReaderGuard},
@@ -138,8 +137,8 @@ where
         c
     }
 
-    pub const fn acquire(&self) -> Acquire<'_, T, D, B, O> {
-        Acquire::new(self)
+    pub const fn acquire_session(&self) -> AcqSession<'_, T, D, B, O> {
+        AcqSession::new(self)
     }
 
     /// Returns a mutable pointer to the underlying data.
@@ -190,9 +189,13 @@ where
 {
     type Target = T;
 
+    type AcqSess<'f> = AcqSession<'f, T, D, B, O> where Self: 'f;
+
+    type Err = super::error_::SpinningRwLockError;
+
     #[inline]
-    fn acquire(&self) -> impl TrSyncRwLockAcquire<'_, Self::Target> {
-        SpinningRwLock::acquire(self)
+    fn acq_session(&self) -> Self::AcqSess<'_> {
+        SpinningRwLock::acquire_session(self)
     }
 }
 
@@ -216,7 +219,7 @@ where
 {}
 
 #[derive(Debug)]
-pub struct Acquire<'a, T, D, B, O>(&'a SpinningRwLock<T, D, B, O>)
+pub struct AcqSession<'a, T, D, B, O>(&'a SpinningRwLock<T, D, B, O>)
 where
     T: ?Sized,
     D: TrAtomicData + Unsigned,
@@ -224,7 +227,7 @@ where
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings;
 
-impl<'a, T, D, B, O> Acquire<'a, T, D, B, O>
+impl<'a, T, D, B, O> AcqSession<'a, T, D, B, O>
 where
     T: ?Sized,
     D: TrAtomicData + Unsigned,
@@ -234,36 +237,39 @@ where
 {
     #[inline]
     pub const fn new(lock: &'a SpinningRwLock<T, D, B, O>) -> Self {
-        Acquire(lock)
+        AcqSession(lock)
     }
 
     pub fn try_read(
         &mut self,
-    ) -> Option<ReaderGuard<'a, '_, T, D, B, O>> {
+    ) -> Result<ReaderGuard<'a, '_, T, D, B, O>, SpinningRwLockError> {
         if self.0.state_().try_read() {
-            Option::Some(ReaderGuard::new(self))
+            Result::Ok(ReaderGuard::new(self))
         } else {
-            Option::None
+            Result::Err(SpinningRwLockError::Retry)
         }
     }
 
     pub fn try_write(
         &mut self,
-    ) -> Option<WriterGuard<'a, '_, T, D, B, O>> {
+    ) -> Result<WriterGuard<'a, '_, T, D, B, O>, SpinningRwLockError> {
         if self.0.state_().try_write() {
-            Option::Some(WriterGuard::new(self))
+            Result::Ok(WriterGuard::new(self))
         } else {
-            Option::None
+            Result::Err(SpinningRwLockError::Retry)
         }
     }
 
-    pub fn try_upgradable_read(
-        &mut self,
-    ) -> Option<UpgradableReaderGuard<'a, '_, T, D, B, O>> {
+    pub fn try_upgradable_read<'f>(
+        &'f mut self,
+    ) -> Result<
+        UpgradableReaderGuard<'a, 'f, T, D, B, O>,
+        SpinningRwLockError,
+    > {
         if self.0.state_().try_upgradable_read() {
-            Option::Some(UpgradableReaderGuard::new(self))
+            Result::Ok(UpgradableReaderGuard::new(self))
         } else {
-            Option::None
+            Result::Err(SpinningRwLockError::Retry)
         }
     }
 
@@ -285,7 +291,7 @@ where
     }
 }
 
-impl<'a, T, D, B, O> Acquire<'a, T, D, B, O>
+impl<'a, T, D, B, O> AcqSession<'a, T, D, B, O>
 where
     T: ?Sized,
     D: TrAtomicData + Unsigned,
@@ -338,7 +344,7 @@ where
         >
     {
         let guard_ptr = &mut guard as *mut UpgradableReaderGuard<'a, 'g, T, D, B, O>;
-        if let Option::Some(g) = Self::try_upgrade_mut_to_writer(unsafe { &mut *guard_ptr }) {
+        if let Result::Ok(g) = Self::try_upgrade_mut_to_writer(unsafe { &mut *guard_ptr }) {
             Result::Ok(g)
         } else {
             Result::Err(guard)
@@ -347,13 +353,13 @@ where
 
     pub(super) fn try_upgrade_mut_to_writer<'g, 'u>(
         guard: &'u mut UpgradableReaderGuard<'a, 'g, T, D, B, O>,
-    ) -> Option<WriterGuard<'a, 'u, T, D, B, O>> {
+    ) -> Result<WriterGuard<'a, 'u, T, D, B, O>, SpinningRwLockError> {
         let acq_mut = guard.share_mut();
         let lock = acq_mut.0;
         if lock.state_().try_upgrade_upgradable_to_write() {
-            Option::Some(WriterGuard::new(acq_mut))
+            Result::Ok(WriterGuard::new(acq_mut))
         } else {
-            Option::None
+            Result::Err(SpinningRwLockError::Retry)
         }
     }
 
@@ -389,7 +395,7 @@ where
     }
 }
 
-impl<'a, T, D, B, O> TrSyncRwLockAcquire<'a, T> for Acquire<'a, T, D, B, O>
+impl<'a, T, D, B, O> TrSyncRwLockAcqSess<'a, T> for AcqSession<'a, T, D, B, O>
 where
     Self: 'a,
     T: ?Sized,
@@ -404,60 +410,68 @@ where
 
     type UpgradableGuard<'g> = UpgradableReaderGuard<'a, 'g, T, D, B, O> where 'a: 'g;
 
+    type Err = SpinningRwLockError;
+
     #[inline]
-    fn try_read<'g>(&'g mut self) -> impl Try<Output = Self::ReaderGuard<'g>>
+    fn try_read<'g>(&'g mut self) -> Result<Self::ReaderGuard<'g>, Self::Err>
     where
         'a: 'g,
     {
-        Acquire::try_read(self)
+        AcqSession::try_read(self)
     }
 
     #[inline]
-    fn try_write<'g>(&'g mut self) -> impl Try<Output = Self::WriterGuard<'g>>
+    fn try_write<'g>(&'g mut self) -> Result<Self::WriterGuard<'g>, Self::Err>
     where
         'a: 'g,
     {
-        Acquire::try_write(self)
+        AcqSession::try_write(self)
     }
 
     #[inline]
     fn try_upgradable_read<'g>(
         &'g mut self,
-    ) -> impl Try<Output = Self::UpgradableGuard<'g>>
+    ) -> Result<Self::UpgradableGuard<'g>, Self::Err>
     where
         'a: 'g,
     {
-        Acquire::try_upgradable_read(self)
+        AcqSession::try_upgradable_read(self)
     }
 
-    #[inline]
-    fn read<'g>(
-        &'g mut self,
-    ) -> impl TrMayBreak<MayBreakOutput: Try<Output = Self::ReaderGuard<'g>>>
+    type ReadMayBreak<'f> = MayBreakRead<'a, 'f, T, D, B, O>
     where
-        'a: 'g,
-    {
-        Acquire::read(self)
-    }
+        Self: 'f;
 
     #[inline]
-    fn write<'g>(
-        &'g mut self,
-    ) -> impl TrMayBreak<MayBreakOutput: Try<Output = Self::WriterGuard<'g>>>
+    fn read<'g>(&'g mut self) -> Self::ReadMayBreak<'g>
     where
         'a: 'g,
     {
-        Acquire::write(self)
+        AcqSession::read(self)
     }
 
+    type WriteMayBreak<'f> = MayBreakWrite<'a, 'f, T, D, B, O>
+    where
+        'a: 'f;
+
     #[inline]
-    fn upgradable_read<'g>(
-        &'g mut self,
-    ) -> impl TrMayBreak<MayBreakOutput: Try<Output = Self::UpgradableGuard<'g>>>
+    fn write<'g>(&'g mut self) -> Self::WriteMayBreak<'g>
     where
         'a: 'g,
     {
-        Acquire::upgradable_read(self)
+        AcqSession::write(self)
+    }
+
+    type UpgradeMayBreak<'f> = MayBreakUpgradableRead<'a, 'f, T, D, B, O>
+    where
+        'a: 'f;
+
+    #[inline]
+    fn upgradable_read<'g>(&'g mut self) -> Self::UpgradeMayBreak<'g>
+    where
+        'a: 'g,
+    {
+        AcqSession::upgradable_read(self)
     }
 }
 
@@ -752,14 +766,15 @@ where
 }
 
 type FpTryAcquire<'a, 'g, T, B, D, O, X> =
-    fn(&'g mut Acquire<'a, T, D, B, O>) -> Option<X>;
+    fn(&'g mut AcqSession<'a, T, D, B, O>,
+) -> Result<X, SpinningRwLockError>;
 
 pub(super) fn may_break_with_impl_<'a, 'g, TTask, T, B, D, O, C, X>(
     mut task: TTask,
-    mut get_acq_mut: impl FnMut(&mut TTask) -> &mut Acquire<'a, T, D, B, O>,
+    mut get_acq_mut: impl FnMut(&mut TTask) -> &mut AcqSession<'a, T, D, B, O>,
     try_acquire: FpTryAcquire<'a, 'g, T, B, D, O, X>,
-    cancel: &mut C,
-) -> Option<X>
+    cancel: C,
+) -> Result<X, SpinningRwLockError>
 where
     TTask: 'g,
     T: ?Sized,
@@ -773,11 +788,11 @@ where
     loop {
         let task_mut = unsafe { &mut *tp };
         let acq_mut = get_acq_mut(task_mut);
-        if let Option::Some(g) = try_acquire(acq_mut) {
-            break Option::Some(g);
+        if let Result::Ok(g) = try_acquire(acq_mut) {
+            break Result::Ok(g);
         };
         if cancel.is_cancelled() {
-            break Option::None;
+            break Result::Err(SpinningRwLockError::Cancelled);
         }
     }
 }

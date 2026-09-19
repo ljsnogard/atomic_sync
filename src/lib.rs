@@ -1,6 +1,7 @@
-﻿#![no_std]
-// #![feature(type_alias_impl_trait)]
+﻿#![allow(unused_features)]
 #![feature(try_trait_v2)]
+
+#![no_std]
 
 // We always pull in `std` during tests, because it's just easier
 // to write tests when you can assume you're on a capable platform

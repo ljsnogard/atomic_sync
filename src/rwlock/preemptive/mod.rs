@@ -1,4 +1,5 @@
-﻿mod rwlock_;
+﻿mod error_;
+mod rwlock_;
 mod reader_;
 mod writer_;
 mod upgrade_;
@@ -7,7 +8,7 @@ mod upgrade_;
 mod tests_;
 
 pub use rwlock_::{
-    Acquire, SpinningRwLock, SpinningRwLockBorrowed, SpinningRwLockOwned,
+    AcqSession, SpinningRwLock, SpinningRwLockBorrowed, SpinningRwLockOwned,
 };
 pub use reader_::{MayBreakRead, ReaderGuard};
 pub use writer_::{MayBreakWrite, WriterGuard};

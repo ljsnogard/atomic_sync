@@ -12,14 +12,16 @@ use atomex::{
 use abs_cancel::TrCancellationToken;
 use abs_sync::{
     may_break::TrMayBreak,
-    sync_lock::*,
+    sync_rwlock::*,
     x_deps::abs_cancel,
 };
 
-use super::rwlock_::{Acquire, may_break_with_impl_};
+use crate::rwlock::preemptive::error_::SpinningRwLockError;
+
+use super::rwlock_::{AcqSession, may_break_with_impl_};
 
 #[derive(Debug)]
-pub struct ReaderGuard<'a, 'g, T, D, B, O>(&'g mut Acquire<'a, T, D, B, O>)
+pub struct ReaderGuard<'a, 'g, T, D, B, O>(&'g mut AcqSession<'a, T, D, B, O>)
 where
     T: 'a + ?Sized,
     D: TrAtomicData + Unsigned,
@@ -35,7 +37,7 @@ where
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
-    pub(super) fn new(acquire: &'g mut Acquire<'a, T, D, B, O>) -> Self {
+    pub(super) fn new(acquire: &'g mut AcqSession<'a, T, D, B, O>) -> Self {
         ReaderGuard(acquire)
     }
 }
@@ -85,10 +87,10 @@ where
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
-    type Acquire = Acquire<'a, T, D, B, O>;
+    type AcqSess = AcqSession<'a, T, D, B, O>;
 }
 
-pub struct MayBreakRead<'a, 'g, T, D, B, O>(&'g mut Acquire<'a, T, D, B, O>)
+pub struct MayBreakRead<'a, 'g, T, D, B, O>(&'g mut AcqSession<'a, T, D, B, O>)
 where
     T: ?Sized,
     D: TrAtomicData + Unsigned,
@@ -104,28 +106,28 @@ where
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
-    pub(super) fn new(acquire: &'g mut Acquire<'a, T, D, B, O>) -> Self {
+    pub(super) fn new(acquire: &'g mut AcqSession<'a, T, D, B, O>) -> Self {
         MayBreakRead(acquire)
     }
 
     #[inline]
     pub fn may_break_with<C>(
         self,
-        cancel: &mut C,
-    ) -> Option<ReaderGuard<'a, 'g, T, D, B, O>>
+        cancel: C,
+    ) -> Result<ReaderGuard<'a, 'g, T, D, B, O>, SpinningRwLockError>
     where
         C: TrCancellationToken,
     {
         may_break_with_impl_(
             self,
             |t| t.0,
-            Acquire::try_read,
+            AcqSession::try_read,
             cancel,
         )
     }
 
     #[inline]
-    pub fn wait(self) -> Option<ReaderGuard<'a, 'g, T, D, B, O>> {
+    pub fn wait(self) -> Result<ReaderGuard<'a, 'g, T, D, B, O>, SpinningRwLockError> {
         TrMayBreak::wait(self)
     }
 
@@ -146,10 +148,10 @@ where
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
-    type MayBreakOutput = Option<ReaderGuard<'a, 'g, T, D, B, O>>;
+    type MayBreakOutput = Result<ReaderGuard<'a, 'g, T, D, B, O>, SpinningRwLockError>;
 
     #[inline]
-    fn may_break_with<C>(self, cancel: &mut C) -> Self::MayBreakOutput
+    fn may_break_with<C>(self, cancel: C) -> Self::MayBreakOutput
     where
         C: TrCancellationToken,
     {

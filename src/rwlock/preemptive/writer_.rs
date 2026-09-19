@@ -12,19 +12,19 @@ use atomex::{
 use abs_cancel::TrCancellationToken;
 use abs_sync::{
     may_break::TrMayBreak,
-    sync_lock::*,
+    sync_rwlock::*,
     x_deps::abs_cancel,
 };
 
-use crate::rwlock::TrShareMut;
+use crate::rwlock::{TrShareMut, preemptive::error_::SpinningRwLockError};
 use super::{
-    rwlock_::{Acquire, may_break_with_impl_},
+    rwlock_::{AcqSession, may_break_with_impl_},
     reader_::ReaderGuard,
     upgrade_::UpgradableReaderGuard,
 };
 
 #[derive(Debug)]
-pub struct WriterGuard<'a, 'g, T, D, B, O>(&'g mut Acquire<'a, T, D, B, O>)
+pub struct WriterGuard<'a, 'g, T, D, B, O>(&'g mut AcqSession<'a, T, D, B, O>)
 where
     T: 'a + ?Sized,
     D: TrAtomicData + Unsigned,
@@ -41,19 +41,19 @@ where
     O: TrCmpxchOrderings,
 {
     pub(super) fn new(
-        acquire: &'g mut Acquire<'a, T, D, B, O>,
+        acquire: &'g mut AcqSession<'a, T, D, B, O>,
     ) -> Self {
         WriterGuard(acquire)
     }
 
     pub fn downgrade_to_reader(self) -> ReaderGuard<'a, 'g, T, D, B, O> {
-        Acquire::downgrade_writer_to_reader(self)
+        AcqSession::downgrade_writer_to_reader(self)
     }
 
     pub fn downgrade_to_upgradable(
         self,
     ) -> UpgradableReaderGuard<'a, 'g, T, D, B, O> {
-        Acquire::downgrade_writer_to_upgradable(self)
+        AcqSession::downgrade_writer_to_upgradable(self)
     }
 }
 
@@ -70,7 +70,7 @@ where
     }
 }
 
-impl<'a, 'g, T, D, B, O> TrShareMut<'g, Acquire<'a, T, D, B, O>>
+impl<'a, 'g, T, D, B, O> TrShareMut<'g, AcqSession<'a, T, D, B, O>>
 for WriterGuard<'a, 'g, T, D, B, O>
 where
     T: 'a + ?Sized,
@@ -79,7 +79,7 @@ where
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
-    fn share_mut(&mut self) -> &'g mut Acquire<'a, T, D, B, O> {
+    fn share_mut(&mut self) -> &'g mut AcqSession<'a, T, D, B, O> {
         let p = self.0 as *mut _;
         unsafe { &mut *p }
     }
@@ -113,7 +113,8 @@ where
     }
 }
 
-impl<'a, 'g, T, D, B, O> TrAcqRefGuard<'a, 'g, T> for WriterGuard<'a, 'g, T, D, B, O>
+impl<'a, 'g, T, D, B, O> TrAcqRefGuard<'a, 'g, T> for
+    WriterGuard<'a, 'g, T, D, B, O>
 where
     T: 'a + ?Sized,
     D: TrAtomicData + Unsigned,
@@ -122,7 +123,8 @@ where
     O: TrCmpxchOrderings,
 {}
 
-impl<'a, 'g, T, D, B, O> TrAcqMutGuard<'a, 'g, T> for WriterGuard<'a, 'g, T, D, B, O>
+impl<'a, 'g, T, D, B, O> TrAcqMutGuard<'a, 'g, T> for
+    WriterGuard<'a, 'g, T, D, B, O>
 where
     T: 'a + ?Sized,
     D: TrAtomicData + Unsigned,
@@ -131,7 +133,8 @@ where
     O: TrCmpxchOrderings,
 {}
 
-impl<'a, 'g, T, D, B, O> TrSyncReaderGuard<'a, 'g, T> for WriterGuard<'a, 'g, T, D, B, O>
+impl<'a, 'g, T, D, B, O> TrSyncReaderGuard<'a, 'g, T> for
+    WriterGuard<'a, 'g, T, D, B, O>
 where
     T: 'a + ?Sized,
     D: TrAtomicData + Unsigned,
@@ -139,11 +142,11 @@ where
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
-    type Acquire = Acquire<'a, T, D, B, O>;
+    type AcqSess = AcqSession<'a, T, D, B, O>;
 }
 
-impl<'a, 'g, T, D, B, O> TrSyncWriterGuard<'a, 'g, T>
-for WriterGuard<'a, 'g, T, D, B, O>
+impl<'a, 'g, T, D, B, O> TrSyncWriterGuard<'a, 'g, T> for
+    WriterGuard<'a, 'g, T, D, B, O>
 where
     T: 'a + ?Sized,
     D: TrAtomicData + Unsigned,
@@ -154,19 +157,19 @@ where
     #[inline(always)]
     fn downgrade_to_reader(
         self,
-    ) -> <Self::Acquire as TrSyncRwLockAcquire<'a, T>>::ReaderGuard<'g> {
+    ) -> <Self::AcqSess as TrSyncRwLockAcqSess<'a, T>>::ReaderGuard<'g> {
         WriterGuard::downgrade_to_reader(self)
     }
 
     #[inline(always)]
     fn downgrade_to_upgradable(
         self,
-    ) -> <Self::Acquire as TrSyncRwLockAcquire<'a, T>>::UpgradableGuard<'g> {
+    ) -> <Self::AcqSess as TrSyncRwLockAcqSess<'a, T>>::UpgradableGuard<'g> {
         WriterGuard::downgrade_to_upgradable(self)
     }
 }
 
-pub struct MayBreakWrite<'a, 'g, T, D, B, O>(&'g mut Acquire<'a, T, D, B, O>)
+pub struct MayBreakWrite<'a, 'g, T, D, B, O>(&'g mut AcqSession<'a, T, D, B, O>)
 where
     T: ?Sized,
     D: TrAtomicData + Unsigned,
@@ -182,28 +185,28 @@ where
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
-    pub(super) fn new(acquire: &'g mut Acquire<'a, T, D, B, O>) -> Self {
+    pub(super) fn new(acquire: &'g mut AcqSession<'a, T, D, B, O>) -> Self {
         MayBreakWrite(acquire)
     }
 
     #[inline]
     pub fn may_break_with<C>(
         self,
-        cancel: &mut C,
-    ) -> Option<WriterGuard<'a, 'g, T, D, B, O>>
+        cancel: C,
+    ) -> Result<WriterGuard<'a, 'g, T, D, B, O>, SpinningRwLockError>
     where
         C: TrCancellationToken,
     {
         may_break_with_impl_(
             self,
             |t| t.0,
-            Acquire::try_write,
+            AcqSession::try_write,
             cancel,
         )
     }
 
     #[inline]
-    pub fn wait(self) -> Option<WriterGuard<'a, 'g, T, D, B, O>> {
+    pub fn wait(self) -> Result<WriterGuard<'a, 'g, T, D, B, O>, SpinningRwLockError> {
         TrMayBreak::wait(self)
     }
 
@@ -224,10 +227,13 @@ where
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
-    type MayBreakOutput = Option<WriterGuard<'a, 'g, T, D, B, O>>;
+    type MayBreakOutput = Result<
+        WriterGuard<'a, 'g, T, D, B, O>,
+        SpinningRwLockError,
+    >;
 
     #[inline]
-    fn may_break_with<C>(self, cancel: &mut C) -> Self::MayBreakOutput
+    fn may_break_with<C>(self, cancel: C) -> Self::MayBreakOutput
     where
         C: TrCancellationToken,
     {
