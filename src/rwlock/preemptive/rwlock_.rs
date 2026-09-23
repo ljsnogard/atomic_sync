@@ -23,7 +23,7 @@ use abs_sync::{
 
 use crate::rwlock::TrShareMut;
 use super::{
-    error_::SpinningRwLockError,
+    error_::RwLockError,
     reader_::{MayBreakRead, ReaderGuard},
     writer_::{MayBreakWrite, WriterGuard},
     upgrade_::{MayBreakUpgradableRead, UpgradableReaderGuard},
@@ -191,7 +191,7 @@ where
 
     type AcqSess<'f> = AcqSession<'f, T, D, B, O> where Self: 'f;
 
-    type Err = super::error_::SpinningRwLockError;
+    type Err = super::error_::RwLockError;
 
     #[inline]
     fn acq_session(&self) -> Self::AcqSess<'_> {
@@ -242,21 +242,21 @@ where
 
     pub fn try_read(
         &mut self,
-    ) -> Result<ReaderGuard<'a, '_, T, D, B, O>, SpinningRwLockError> {
+    ) -> Result<ReaderGuard<'a, '_, T, D, B, O>, RwLockError> {
         if self.0.state_().try_read() {
             Result::Ok(ReaderGuard::new(self))
         } else {
-            Result::Err(SpinningRwLockError::Retry)
+            Result::Err(RwLockError::Retry)
         }
     }
 
     pub fn try_write(
         &mut self,
-    ) -> Result<WriterGuard<'a, '_, T, D, B, O>, SpinningRwLockError> {
+    ) -> Result<WriterGuard<'a, '_, T, D, B, O>, RwLockError> {
         if self.0.state_().try_write() {
             Result::Ok(WriterGuard::new(self))
         } else {
-            Result::Err(SpinningRwLockError::Retry)
+            Result::Err(RwLockError::Retry)
         }
     }
 
@@ -264,12 +264,12 @@ where
         &'f mut self,
     ) -> Result<
         UpgradableReaderGuard<'a, 'f, T, D, B, O>,
-        SpinningRwLockError,
+        RwLockError,
     > {
         if self.0.state_().try_upgradable_read() {
             Result::Ok(UpgradableReaderGuard::new(self))
         } else {
-            Result::Err(SpinningRwLockError::Retry)
+            Result::Err(RwLockError::Retry)
         }
     }
 
@@ -353,13 +353,13 @@ where
 
     pub(super) fn try_upgrade_mut_to_writer<'g, 'u>(
         guard: &'u mut UpgradableReaderGuard<'a, 'g, T, D, B, O>,
-    ) -> Result<WriterGuard<'a, 'u, T, D, B, O>, SpinningRwLockError> {
+    ) -> Result<WriterGuard<'a, 'u, T, D, B, O>, RwLockError> {
         let acq_mut = guard.share_mut();
         let lock = acq_mut.0;
         if lock.state_().try_upgrade_upgradable_to_write() {
             Result::Ok(WriterGuard::new(acq_mut))
         } else {
-            Result::Err(SpinningRwLockError::Retry)
+            Result::Err(RwLockError::Retry)
         }
     }
 
@@ -410,7 +410,7 @@ where
 
     type UpgradableGuard<'g> = UpgradableReaderGuard<'a, 'g, T, D, B, O> where 'a: 'g;
 
-    type Err = SpinningRwLockError;
+    type Err = RwLockError;
 
     #[inline]
     fn try_read<'g>(&'g mut self) -> Result<Self::ReaderGuard<'g>, Self::Err>
@@ -767,14 +767,14 @@ where
 
 type FpTryAcquire<'a, 'g, T, B, D, O, X> =
     fn(&'g mut AcqSession<'a, T, D, B, O>,
-) -> Result<X, SpinningRwLockError>;
+) -> Result<X, RwLockError>;
 
 pub(super) fn may_break_with_impl_<'a, 'g, TTask, T, B, D, O, C, X>(
     mut task: TTask,
     mut get_acq_mut: impl FnMut(&mut TTask) -> &mut AcqSession<'a, T, D, B, O>,
     try_acquire: FpTryAcquire<'a, 'g, T, B, D, O, X>,
     cancel: C,
-) -> Result<X, SpinningRwLockError>
+) -> Result<X, RwLockError>
 where
     TTask: 'g,
     T: ?Sized,
@@ -792,7 +792,7 @@ where
             break Result::Ok(g);
         };
         if cancel.is_cancelled() {
-            break Result::Err(SpinningRwLockError::Cancelled);
+            break Result::Err(RwLockError::Cancelled);
         }
     }
 }

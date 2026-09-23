@@ -18,7 +18,7 @@ use abs_sync::{
 
 use crate::rwlock::TrShareMut;
 use super::{
-    error_::SpinningRwLockError,
+    error_::RwLockError,
     rwlock_::{AcqSession, may_break_with_impl_},
     reader_::ReaderGuard,
     writer_::WriterGuard,
@@ -180,7 +180,7 @@ where
     pub fn may_break_with<C>(
         self,
         cancel: C,
-    ) -> Result<UpgradableReaderGuard<'a, 'g, T, D, B, O>, SpinningRwLockError>
+    ) -> Result<UpgradableReaderGuard<'a, 'g, T, D, B, O>, RwLockError>
     where
         C: TrCancellationToken,
     {
@@ -195,7 +195,7 @@ where
     #[inline]
     pub fn wait(
         self,
-    ) -> Result<UpgradableReaderGuard<'a, 'g, T, D, B, O>, SpinningRwLockError> {
+    ) -> Result<UpgradableReaderGuard<'a, 'g, T, D, B, O>, RwLockError> {
         TrMayBreak::wait(self)
     }
 
@@ -218,7 +218,7 @@ where
 {
     type MayBreakOutput = Result<
         UpgradableReaderGuard<'a, 'g, T, D, B, O>,
-        SpinningRwLockError,
+        RwLockError,
     >;
 
     #[inline]
@@ -252,7 +252,7 @@ where
 
     pub fn try_upgrade<'u>(
         &'u mut self,
-    ) -> Result<WriterGuard<'a, 'u, T, D, B, O>, SpinningRwLockError> {
+    ) -> Result<WriterGuard<'a, 'u, T, D, B, O>, RwLockError> {
         AcqSession::try_upgrade_mut_to_writer(self.guard_mut())
     }
 
@@ -272,7 +272,7 @@ where
     pub fn upgrade_with_cancel<'u, C>(
         &'u mut self,
         cancel: C,
-    ) -> Result<WriterGuard<'a, 'u, T, D, B, O>, SpinningRwLockError>
+    ) -> Result<WriterGuard<'a, 'u, T, D, B, O>, RwLockError>
     where
         C: TrCancellationToken,
     {
@@ -284,7 +284,7 @@ where
                 break opt;
             };
             if cancel.is_cancelled() {
-                break Result::Err(SpinningRwLockError::Cancelled);
+                break Result::Err(RwLockError::Cancelled);
             }
         }
     }
@@ -310,7 +310,7 @@ where
         &'u mut self,
     ) -> Result<
         <Self::ParentSess as TrSyncRwLockAcqSess<'a, T>>::WriterGuard<'u>,
-        SpinningRwLockError,
+        RwLockError,
     >
     where
         'g: 'u,
@@ -364,7 +364,7 @@ where
     pub fn may_break_with<C>(
         self,
         cancel: C,
-    ) -> Result<WriterGuard<'a, 'u, T, D, B, O>, SpinningRwLockError>
+    ) -> Result<WriterGuard<'a, 'u, T, D, B, O>, RwLockError>
     where
         C: TrCancellationToken,
     {
@@ -374,7 +374,7 @@ where
     #[inline]
     pub fn wait(
         self,
-    ) -> Result<WriterGuard<'a, 'u, T, D, B, O>, SpinningRwLockError> {
+    ) -> Result<WriterGuard<'a, 'u, T, D, B, O>, RwLockError> {
         self.may_break_with(NonCancellableToken::new())
     }
 
@@ -397,7 +397,7 @@ where
 {
     type MayBreakOutput = Result<
         WriterGuard<'a, 'u, T, D, B, O>,
-        SpinningRwLockError,
+        RwLockError,
     >;
 
     #[inline]

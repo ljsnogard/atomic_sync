@@ -16,7 +16,7 @@ use abs_sync::{
     x_deps::abs_cancel,
 };
 
-use crate::rwlock::preemptive::error_::SpinningRwLockError;
+use crate::rwlock::preemptive::error_::RwLockError;
 
 use super::rwlock_::{AcqSession, may_break_with_impl_};
 
@@ -114,7 +114,7 @@ where
     pub fn may_break_with<C>(
         self,
         cancel: C,
-    ) -> Result<ReaderGuard<'a, 'g, T, D, B, O>, SpinningRwLockError>
+    ) -> Result<ReaderGuard<'a, 'g, T, D, B, O>, RwLockError>
     where
         C: TrCancellationToken,
     {
@@ -127,7 +127,7 @@ where
     }
 
     #[inline]
-    pub fn wait(self) -> Result<ReaderGuard<'a, 'g, T, D, B, O>, SpinningRwLockError> {
+    pub fn wait(self) -> Result<ReaderGuard<'a, 'g, T, D, B, O>, RwLockError> {
         TrMayBreak::wait(self)
     }
 
@@ -148,7 +148,7 @@ where
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
 {
-    type MayBreakOutput = Result<ReaderGuard<'a, 'g, T, D, B, O>, SpinningRwLockError>;
+    type MayBreakOutput = Result<ReaderGuard<'a, 'g, T, D, B, O>, RwLockError>;
 
     #[inline]
     fn may_break_with<C>(self, cancel: C) -> Self::MayBreakOutput

@@ -20,7 +20,7 @@ use abs_sync::{
     x_deps::abs_cancel,
 };
 
-pub use super::error_::SpinningMutexError;
+pub use super::error_::MutexError;
 
 /// An helper trait to define spinlock behaviour
 pub trait TrMutexSignal<V>
@@ -275,7 +275,7 @@ where
 
     pub fn try_lock<'g>(
         &'g mut self,
-    ) -> Result<MutexGuard<'a, 'g, T, D, B, S, O>, SpinningMutexError> {
+    ) -> Result<MutexGuard<'a, 'g, T, D, B, S, O>, MutexError> {
         self.0
             .try_once_compare_exchange_weak(
                 self.0.value(),
@@ -283,7 +283,7 @@ where
                 S::make_acquired)
             .succ()
             .map(|_| MutexGuard::new(self))
-            .ok_or(SpinningMutexError::Retry)
+            .ok_or(MutexError::Retry)
     }
 
     fn mutex_(&self) -> &'a SpinningMutex<T, D, B, S, O> {
@@ -293,7 +293,7 @@ where
     fn try_spin_acquire_<'g, C>(
         &'g mut self,
         cancel: C,
-    ) -> Result<MutexGuard<'a, 'g, T, D, B, S, O>, SpinningMutexError>
+    ) -> Result<MutexGuard<'a, 'g, T, D, B, S, O>, MutexError>
     where
         C: TrCancellationToken,
     {
@@ -304,7 +304,7 @@ where
             // the lock and a cancellation arriving while waiting is honoured
             // promptly.
             if cancel.is_cancelled() {
-                break Result::Err(SpinningMutexError::Cancelled);
+                break Result::Err(MutexError::Cancelled);
             }
             match self.mutex_().try_once_compare_exchange_weak(
                 current,
@@ -351,7 +351,7 @@ where
     where
         'a: 'f;
 
-    type Err = SpinningMutexError;
+    type Err = MutexError;
 
     #[inline]
     fn try_lock<'g>(&'g mut self) -> Result<Self::Guard<'g>, Self::Err>
@@ -391,7 +391,7 @@ where
     pub fn may_break_with<C>(
         self,
         cancel: C,
-    ) -> Result<MutexGuard<'a, 'g, T, D, B, S, O>, SpinningMutexError>
+    ) -> Result<MutexGuard<'a, 'g, T, D, B, S, O>, MutexError>
     where
         C: TrCancellationToken,
     {
@@ -399,7 +399,7 @@ where
     }
 
     #[inline]
-    pub fn wait(self) -> Result<MutexGuard<'a, 'g, T, D, B, S, O>, SpinningMutexError> {
+    pub fn wait(self) -> Result<MutexGuard<'a, 'g, T, D, B, S, O>, MutexError> {
         TrMayBreak::wait(self)
     }
 }
@@ -415,7 +415,7 @@ where
 {
     type MayBreakOutput = Result<
         MutexGuard<'a, 'g, T, D, B, S, O>,
-        SpinningMutexError,
+        MutexError,
     >;
 
     #[inline]

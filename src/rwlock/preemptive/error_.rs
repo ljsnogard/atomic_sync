@@ -1,21 +1,21 @@
 use core::fmt;
 
 #[derive(Clone, Copy, Debug)]
-pub enum SpinningRwLockError {
+pub enum RwLockError {
     Cancelled,
     Poisoned,
     Retry,
 }
 
-impl fmt::Display for SpinningRwLockError {
+impl fmt::Display for RwLockError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SpinningRwLockError::Cancelled => write!(f, "SpinningRwLockError::Cancelled"),
-            SpinningRwLockError::Poisoned => write!(f, "SpinningRwLockError::Poisoned"),
-            SpinningRwLockError::Retry => write!(f, "SpinningRwLockError::Retry"),
+            RwLockError::Cancelled => write!(f, "SpinningRwLockError::Cancelled"),
+            RwLockError::Poisoned => write!(f, "SpinningRwLockError::Poisoned"),
+            RwLockError::Retry => write!(f, "SpinningRwLockError::Retry"),
         }
     }
 }
 
-impl core::error::Error for SpinningRwLockError
+impl core::error::Error for RwLockError
 {}

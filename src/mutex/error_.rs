@@ -1,21 +1,21 @@
 use core::fmt;
 
 #[derive(Clone, Copy, Debug)]
-pub enum SpinningMutexError {
+pub enum MutexError {
     Cancelled,
     Poisoned,
     Retry,
 }
 
-impl fmt::Display for SpinningMutexError {
+impl fmt::Display for MutexError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SpinningMutexError::Cancelled => write!(f, "SpinningMutexError::Cancelled"),
-            SpinningMutexError::Poisoned => write!(f, "SpinningMutexError::Poisoned"),
-            SpinningMutexError::Retry => write!(f, "SpinningMutexError::Retry"),
+            MutexError::Cancelled => write!(f, "SpinningMutexError::Cancelled"),
+            MutexError::Poisoned => write!(f, "SpinningMutexError::Poisoned"),
+            MutexError::Retry => write!(f, "SpinningMutexError::Retry"),
         }
     }
 }
 
-impl core::error::Error for SpinningMutexError
+impl core::error::Error for MutexError
 {}
