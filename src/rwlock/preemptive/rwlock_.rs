@@ -109,19 +109,20 @@ where
     ///
     /// ```
     /// use atomic_sync::rwlock::preemptive::SpinningRwLockOwned;
+    /// use atomic_sync::x_deps::abs_sync::sync_rwlock::TrSyncUpgradableReaderGuard;
     ///
     /// let lock = SpinningRwLockOwned::<()>::new_owned(());
     /// assert_eq!(lock.reader_count(), 0);
     ///
-    /// let mut acq0 = lock.acquire();
-    /// let r0 = acq0.upgradable_read().wait_or(|| unreachable!());
+    /// let mut acq0 = lock.acquire_session();
+    /// let r0 = acq0.try_upgradable_read().unwrap();
     /// assert_eq!(lock.reader_count(), 1);
     ///
-    /// let mut acq1 = lock.acquire();
-    /// let r1 = acq1.read().wait_or(|| unreachable!());
+    /// let mut acq1 = lock.acquire_session();
+    /// let r1 = acq1.try_read().unwrap();
     /// assert_eq!(lock.reader_count(), 2);
     ///
-    /// let mut upg = r0.upgrade();
+    /// let mut upg = r0.upgrade_session();
     /// assert_eq!(lock.reader_count(), 2);
     ///
     /// drop(r1);
@@ -157,7 +158,7 @@ where
     /// use atomic_sync::rwlock::preemptive::SpinningRwLockOwned;
     ///
     /// let lock = SpinningRwLockOwned::<usize>::new_owned(42);
-    /// let mut acq = lock.acquire();
+    /// let mut acq = lock.acquire_session();
     /// unsafe {
     ///     let mut m = ManuallyDrop::new(acq.write().wait_or(|| unreachable!()));
     ///
