@@ -2,7 +2,8 @@
 
 - 日期：2026-09-24 01:42
 - 前置阅读：`rwlock-20260923-2204.md` §4.5（升级插队）、§4.9（一次性放行）、§6.3（8 线程崩塌的定位过程）
-- 状态：**方案，尚未实现**。本文只描述"要改什么、为什么、怎么验证"，代码留到下一次会话。
+- 状态：**方案 B 已实现、测试全绿并保留**；可靠测量范围内无退化，但 N=8 的
+  墙钟收益未能在当前共享主机上判定（见 §11）。§11.6 记录了复测口径。
 
 ---
 
@@ -92,7 +93,8 @@ bit [0, N-5]   READER_COUNT
 - 新增 `K_WRITER_QUEUED` 与一组 `expect_writer_queued_ / desire_*` 谓词；
 - 新增 `pub(super) fn mark_writer_queued()` / `clear_writer_queued()`（与现有的
   `mark_waiter_queued` 同型，走 `try_spin_update_(|_| true, ..)`）；
-- `CoopRwStateSnapshot` 增加 `writer_queued: bool` 字段；
+- `CoopRwStateSnapshot` 增加 `writer_queued: bool` 字段（**仅用于测试与 `debug_assert`
+  观测**，`pass_` 的放行判定不依赖它——`pass_` 只看写者/可升级/读者计数）；
 - `expect_can_read_fast_` 用 `expect_writer_queued_` 取代 `expect_no_waiter_queued_`；
 - `expect_can_read_queued_` **不动**（排队路径本来就不看这两个标记）。
 
@@ -151,9 +153,9 @@ cooperative 版必须由 `Drop`（`cancel_wait` → `mark_cancelled` → 递减�
 
 | 文件 | 改动 |
 |---|---|
-| `state_.rs` | 位域重排；`K_WAITERS_PRESENT` 改名；新增 `WRITER_QUEUED` 谓词与 set/clear；`snapshot` 加字段；`expect_can_read_fast_` 换条件；补位域单测 |
+| `state_.rs` | 位域重排；`K_WAITER_QUEUED` / `waiter_queued` 一族改名 `WAITERS_PRESENT`；新增 `WRITER_QUEUED` 谓词与 set/clear；`snapshot` 加字段（观测用）；`expect_can_read_fast_` 换条件（**`expect_can_write_fast_` / `expect_can_upgradable_read_fast_` 保持 `WAITERS_PRESENT` 不变**）；同步 `Debug` 输出与 `try_read_queued` 文档注释；补位域单测 |
 | `wait_.rs` | 不改（槽位状态机与 `Admitted` 语义保持） |
-| `core_.rs` | `RwCore` 加 `writer_waiters_: usize`；`enqueue_` 里 +1/置位；`acquire`/`poll_acquire`/`cancel_wait` 里在 `mark_*` 之后 -1/清位；`pass_` 里读快路径判定改用 `snapshot().writer_queued`；`run_pass_` 的快出口改用 `WAITERS_PRESENT` |
+| `core_.rs` | `RwCore` 加 `writer_waiters_: usize`；`enqueue_` 里 +1/置位；`acquire`/`poll_acquire`/`cancel_wait` 里在 `mark_*` 之后 -1/清位；`run_pass_` 的快出口改用 `WAITERS_PRESENT`（`pass_` 的放行判定不含读快路径条件，无需改动） |
 | `rwlock_.rs` / `reader_.rs` / `writer_.rs` / `upgrade_.rs` | 不改（接口与 future 形状不变） |
 | `tests_.rs` | 新增"只有读者排队时新读者走快速路径"等测试（见 §7） |
 | `tests/cooperative_rwlock.rs` | 新增取消写者等待后读者恢复的回归测试；升级 barrier 仍生效 |
@@ -215,3 +217,172 @@ cooperative 版必须由 `Drop`（`cancel_wait` → `mark_cancelled` → 递减�
    收益与方案 B 相同，暂不采用。
 3. **批量放行连续读类节点**：属于另一个正交优化（减少交接次数），
    与本文的准入条件无关，见 `rwlock-20260923-2204.md` §7。
+
+---
+
+## 10. 本轮设计复核确认的边界（2026-09-24）
+
+对源码（`cooperative/state_.rs`、`core_.rs`、`wait_.rs`、三个获取 future）与
+`preemptive/rwlock_.rs` 逐条复核后，确认以下判定；实施时以此为准。前三条是
+本轮明确拍板的取舍，后七条是复核中补出的实施细节。
+
+1. **只放松普通读**。只有 `expect_can_read_fast_` 改用 `expect_writer_queued_`；
+   `try_write_fast` 与 `try_upgradable_read_fast` **继续要求队列为空**
+   （`WAITERS_PRESENT == false`）。依据是 §1 的对照实验：只删掉读快路径里那一个检查
+   就得到 `快路/op = 0.754`，与负载中 75% 的普通读吻合；可升级读若一并插队，会把
+   "升级需等既有读者排空"的不确定性放大，且没有实测数据支撑。
+2. **`snapshot().writer_queued` 只作观测**。它供单元测试与 `pass_` 内的
+   `debug_assert`（`writer_waiters_ > 0 ⟺ 置位`）使用，不参与放行判定。
+   原文 §3、§6 中"`pass_` 里读快路径判定改用 `snapshot().writer_queued`"是措辞错误，已修正。
+3. **窄 `D` 的读者上限下降接受**。`K_MAX_READER_COUNT` 由 `D::MAX >> 3` 变 `>> 4`：
+   默认 `usize` 下为 `2^60 - 1`（无实际影响），`D = u8` 时 31 → 15。
+   实施时在类型文档与 CHANGELOG 点名；按 AGENTS.md 第 1 条，这属于面向使用者的
+   语义变化，须随实现一起记录，但不是新增/修改公开签名。
+4. **计数递减的单次性**。三个 `*AcquireInner` 在领取成功时先清 `pending_` 再返回
+   `Ready`（见 `reader_.rs` 的 `poll`），因此 `Drop` 的 `cancel_wait` 不可能对同一槽位
+   二次执行。即便如此，递减处仍加 `debug_assert!(writer_waiters_ > 0)`：
+   `usize` 下溢是静默 wrap，属于必须靠断言暴露的一类（同 §4.8 的教训）。
+5. **独占槽位的判定用 `!node.is_readish()`**，这样 `cancel_wait` 不必再取节点锁，
+   `wait_.rs` 无需新增接口，与 §6 的"不改"一致。
+6. **活性判据（比 §8 的表述更完整）**：任何让"排队读者"领取失败的原因——写者持有、
+   队首是独占节点、读者计数饱和——**同时也让读快路径失效**（前两者分别命中
+   `WRITER_ACTIVE` 与 `WRITER_QUEUED`，第三者命中 `expect_reader_lt_max_`）。
+   所以插队读者不可能成为排队读者持续失败的原因。§8 只覆盖了前两者。
+7. **时序论证**：`atomex::TrAtomicFlags::try_spin_compare_exchange_weak` 每次重试都用
+   最新负载值重新求值谓词，因此"读者观察到 `WRITER_QUEUED == 0` 且 CAS 成功"的线性化点
+   必定早于写者置位；不存在读者在写者入队之后仍挤进快路径的窗口。
+8. **§7 单元测试 1/2 的拆分**：`fast_path_should_reject_when_queue_not_empty` 必须拆成两条——
+   只置 `WAITERS_PRESENT` 时 `try_read_fast` 应当**成功**（而 `try_write_fast`、
+   `try_upgradable_read_fast` 仍失败）；置 `WRITER_QUEUED` 时 `try_read_fast` 才失败。
+9. **§7 第 5 条的确定性写法**：单线程 compio 下
+   "写者持锁 → 读者 A 异步入队 → 释放写者 → **不 await** 立刻 `sess_b.try_read()`"。
+   此时 A 已 `Admitted` 但尚未被 `poll`，队列非空而 `writer_waiters_ == 0`：
+   旧实现返回 `WouldBlock`，新实现返回 `Ok`，两种语义可判定地分开。
+   若该执行器会内联 `poll` 破坏这个窗口，退路是给 `RwCore` 加 `#[cfg(test)]` 观测探针。
+10. **性能复测口径**：bench 当前已无 `快路/op`、`入队/op`、`pass/op`、`wake/op`
+    计数器（当时是临时探针，未保留）。验收以 §7 的 ns/op 硬指标为准；若要验证
+    "机制生效"而不只是"数字变好"，临时加回计数器，测完撤回。
+
+---
+
+## 11. 实施与实测结果（2026-09-24，方案 B）
+
+本节记录实际实施与测量。**结论：方案 B 的机制正确生效，但 ns/op 收益远低于
+§2 预测（预期 350~500），在 N=8 读多写少上没有可判定的提升，未达 §7 的
+≤450 验收线。** 根因见 §11.4。
+
+### 11.1 落地内容
+
+| 文件 | 改动 |
+|---|---|
+| `state_.rs` | 5 域位布局；`WAITERS_PRESENT` / `WRITER_QUEUED` 位与谓词；`expect_can_read_fast_` 换条件；`Debug`、快照、文档注释；单测重组为 4 条位域语义测试 |
+| `core_.rs` | `QueuePayload { nodes_, writer_waiters_ }`；`enqueue_` / `acquire` / `poll_acquire` / `cancel_wait` 维护计数与位；`pass_` 一致性 `debug_assert` 与队列空时的防御性归零 |
+| `mod.rs` / `rwlock_.rs` / `upgrade_.rs` | 公平性策略与读者上限的文档更新 |
+| `tests_.rs` / `tests/cooperative_rwlock.rs` | 新增 4 条运行时测试 + 1 条集成回归（读者插队、写者不饥饿、升级屏障、取消收回标记） |
+
+**与原文的实现偏差（1 处）**：§4 原写"在 `RwCore` 增加一个普通字段
+`writer_waiters_: usize`"。但 `RwCore` 共享在 `Arc` 里，所有入口只拿得到
+`&self`，普通字段无法可变访问。实际做法是把它放进队列锁的载荷
+`QueuePayload`（`queue_: SpinLock<QueuePayload>`），与队列同锁保护，
+既满足"只在队列锁内读写"，也不需要 `UnsafeCell`/`unsafe`。`wait_.rs` 确实未改。
+
+验证：`cargo test`（51 lib + 7 集成 + 8 preemptive + 3 doc）、
+`cargo test --release`、`cargo clippy --all-targets -- -D warnings` 全部通过。
+
+### 11.2 机制确实生效（临时探针，读多写少，N=8）
+
+探针只用于取**比率**（它本身有原子开销，ns/op 不可信）：
+
+| 指标（N=8 读多写少） | 严格 FIFO（§6.3 记录） | 方案 B 实测 | 条件 C 实测 |
+|---|---|---|---|
+| 读快路径命中率 | 0.008 | **0.328** | 0.999 |
+| 入队/op（读） | 0.942（合计） | 0.505 | 0.001 |
+| 入队/op（写 / 升级读 / 升级） | — | 0.149 / 0.049 / 0.000 | 0.286 / 0.094 / 0.000 |
+| 抢队列锁/op | 2.664 | **1.042** | 1.994 |
+| wake/op | 0.68 | 0.686 | 0.381 |
+| ns/op | 610（当时） | 609.9（干净复测） | **355.2** |
+
+即：方案 B 把读快路径命中率提高了约 40 倍、入队率降了约 1/3、抢锁次数降到
+约 40%，**但 ns/op 没有随之下降**；而条件 C 仍能复现文档记录的量级
+（355 vs 334）。说明剩余的墙钟时间主要不在"读者抢队列锁"，而在
+**读者排队后等待跨线程唤醒**：条件 C 几乎不让读者入队，wake/op 从 0.686
+降到 0.381，这才是 610 → 355 的来源。
+
+### 11.3 墙钟 A/B（同机、紧邻、同配置，stash 切换基线）
+
+本机是 4 核共享容器，测量期间主机 load average ≈ 2.75，**N=4/8 的跨线程方差
+远大于效应**，因此下表只作记录、不作结论：
+
+| 配置 | 基线（严格 FIFO） | 方案 B |
+|---|---|---|
+| 读多写少 N=1（ops=20k, 9 轮） | 65.3 ns | 64.9 ns |
+| 读多写少 N=2（同上） | 211.4 ns | **199.2 ns（−5.8%）** |
+| 写多读少 N=1（同上） | 71.2 ns | 72.6 ns |
+| 写多读少 N=2（同上） | 307.9 ns | 313.1 ns |
+| 读多写少 N=4（ops=8k, 5 轮） | 85.4 ns | 68.5 ns |
+| 读多写少 N=8（ops=8k, 5 轮） | 345.1 ns | 605.9 ns（**与另一轮 750.8 → 609.9 矛盾**） |
+| 读多写少 N=8 compio 单线程 | 56.2 ns | 56.8 ns（无退化） |
+
+同一份代码在 N=8 的两轮之间可以从 345 变到 750（基线）、从 610 变到 503
+（方案 B）。**结论：本机无法可靠测量 N≥4 的 ns/op 差异；唯一稳定的收益信号是
+N=2 读多写少的约 6%。**
+
+### 11.4 根因：`WRITER_QUEUED` 在 N=8 下大部分时间都是置位的
+
+方案 B 只在"队列里没有写者/升级"时放行读者。探针显示 N=8 读多写少时读快路径
+只有 0.328——也就是约 2/3 的读请求到达时，已经有一个写者/升级在排队。
+读多写少负载里写 + 升级占 20%，但这些排他操作每次都要等既有读者排空，
+等待期很长；于是"写者排队"几乎覆盖了大部分墙钟时间，读者照样入队。
+
+§1 的对照实验（删掉整个检查）测的是**条件 C**，而 §2 表格把它的收益外推成
+"方案 B 预期 350~500"，这一步外推是错的：条件 C 的收益里有很大一部分来自
+"读者可以越过已排队的写者"，那正是方案 B 为了写者公平而主动放弃的部分。
+
+### 11.5 待决策
+
+1. **保留方案 B**：公平性/活性不变（写者、升级不饥饿），N=2 约 −6%，
+   N=8 无可判定收益。改动本身自洽、测试完备，代价是多了两次状态字 RMW 与
+   一个计数器。
+2. **改用条件 C**（读快路径只看 `!WRITER_ACTIVE`）：可复现 ~355 ns/op
+   （约 1.7x），但**写者可能被持续到达的读者饿死**，§5.1/§7 的"不饥饿"硬性
+   要求与 `writer_should_not_starve_while_readers_keep_arriving` 等测试都要改，
+   属于主动放弃写者公平性。
+3. **混合（有界插队）**：在条件 C 上引入"每个排队写者只放行有限次读者插队"的
+   预算或老化机制。需要额外状态位/计数器，且新状态位会再次压缩读者计数位宽；
+   收益与复杂度需要先小规模验证。
+
+**本轮决策：保留方案 B。** 理由：机制正确、公平性与活性承诺不变、测试完备，
+在可靠测量范围内（N≤2、compio 单线程）没有退化；当前主机负载太高，
+不足以支撑"方案 B 收益小"或"方案 B 有害"的结论，因此不据此改动策略。
+条件 C 与混合方案留作备选，等安静机器上的 N=8 数据出来再评估。
+
+### 11.6 N=8 复测口径（留给下一轮）
+
+前提：机器空闲（`uptime` 的 load average 应显著小于核数），否则 N≥4 的跨线程
+数据不可用。基线用 `git stash` 切换，A/B 必须紧邻、同配置、同轮数。
+
+```bash
+cd atomic_sync
+CFG="RWLOCK_BENCH_OPS=20000 RWLOCK_BENCH_ROUNDS=7 RWLOCK_BENCH_COMPETITORS=4,8"
+
+# 方案 B
+env $CFG RWLOCK_BENCH_WEIGHTS=readheavy  cargo bench --bench rwlock_cooperative
+env $CFG RWLOCK_BENCH_WEIGHTS=writeheavy cargo bench --bench rwlock_cooperative
+
+# 严格 FIFO 基线
+git stash push -m baseline
+env $CFG RWLOCK_BENCH_WEIGHTS=readheavy  cargo bench --bench rwlock_cooperative
+env $CFG RWLOCK_BENCH_WEIGHTS=writeheavy cargo bench --bench rwlock_cooperative
+git stash pop
+```
+
+判读要点：
+
+- 只信**同一次运行内**的方案 B 与基线对比；跨次运行的绝对值在本机曾相差 2 倍；
+- 同时看 `整轮总耗时` 列（§6.4 的口径问题）；
+- 若要再次确认"机制生效"，临时加回 §11.2 的探针（读快路径命中率、入队/op、
+  抢锁/op、wake/op），测完删除——探针的原子操作会污染 ns/op；
+- 验收线仍是 §7 的 N=8 读多写少 ≤450 ns/op。若安静机器上仍 ≈600，
+  说明方案 B 的收益上限确实被"写者排队期读者必须等唤醒"锁死，届时再评估
+  条件 C（~355，牺牲写者不饥饿）或 §11.5 的混合方案。
+

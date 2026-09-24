@@ -229,6 +229,142 @@ async fn coalesced_readers_should_all_be_admitted() {
     assert_eq!(lock.reader_count(), 0);
 }
 
+/// 测试"队列里只有读者"时新读者不被拖进队列（本次公平性调整的核心语义）。
+/// - 手段：主任务持有写锁；spawn 一个读者任务使其入队；释放写锁后**不 await**，
+///   立刻用一个新会话探测队列状态并尝试同步读。
+/// - 判断：此刻队列仍非空、且没有写者排队，`try_read()` 必须成功；旧实现会
+///   因为"队列非空"而返回 `WouldBlock`。
+#[compio::test]
+async fn reader_should_barge_when_only_readers_queued() {
+    let lock = Arc::new(TestLock::new_owned(0));
+    let mut sess_hold = lock.acquire_session();
+    let hold = sess_hold.try_write().unwrap();
+
+    let l_r = Arc::clone(&lock);
+    let reader = compio::runtime::spawn(async move {
+        let mut s = l_r.acquire_session();
+        let g = s.read_async().await.unwrap();
+        *g
+    });
+    let_tasks_settle().await;
+
+    drop(hold);
+    // 尚未让出执行权：读者任务已 `Admitted` 但还没被 poll，队列仍然非空。
+    let mut sess_probe = lock.acquire_session();
+    assert!(
+        sess_probe.core().waiters_present(),
+        "读者应仍留在队列中（快路径探测的前提）"
+    );
+    assert!(!sess_probe.core().writer_queued(), "队列里只有读者");
+    let barged = sess_probe.try_read();
+    assert!(barged.is_ok(), "只有读者排队时，新读者不应被拖进队列");
+    drop(barged);
+
+    assert_eq!(reader.await.unwrap(), 0);
+}
+
+/// 测试写者不会被持续到达的读者饿死（公平性是硬性要求）。
+/// - 手段：主任务持有一个读守卫；spawn 写者任务使其入队；主任务连续尝试新读者
+///   （写者排队期间必须全部失败，即屏障生效），随后释放读守卫。
+/// - 判断：写者任务必须在超时内完成；若屏障失效，持续到达的读者会把它饿死。
+#[compio::test]
+async fn writer_should_not_starve_while_readers_keep_arriving() {
+    let lock = Arc::new(TestLock::new_owned(0));
+    let mut sess_r = lock.acquire_session();
+    let r = sess_r.read_async().await.unwrap();
+
+    let l_w = Arc::clone(&lock);
+    let writer = compio::runtime::spawn(async move {
+        let mut s = l_w.acquire_session();
+        let g = s.write_async().await.unwrap();
+        *g
+    });
+    let_tasks_settle().await;
+
+    // 写者已排队：新读者必须被挡住，这是"写者屏障"生效的直接证据。
+    let mut probe = lock.acquire_session();
+    for _ in 0..64 {
+        assert!(probe.try_read().is_err(), "写者排队期间读者不得插队");
+    }
+
+    drop(r);
+    let done = with_timeout(
+        writer,
+        compio::time::sleep(Duration::from_millis(500)),
+    )
+    .await;
+    assert!(matches!(done, Some(Ok(0))), "既有读者排空后写者必须进入");
+}
+
+/// 测试升级请求排队时同样挡住新读者（升级计入写者屏障）。
+/// - 手段：一个可升级读者加一个普通读者；在可升级读者上发起异步升级，手动
+///   `poll` 一次让它入队（此刻因还有别的读者而无法立即成功）。
+/// - 判断：升级排队期间 `writer_queued` 为真，且新读者的 `try_read` 失败；
+///   释放普通读者后升级完成。
+#[compio::test]
+async fn queued_upgrade_should_block_new_readers() {
+    let lock = TestLock::new_owned(0);
+    let mut sess_u = lock.acquire_session();
+    let mut sess_r = lock.acquire_session();
+    let upg = sess_u.upgradable_read_async().await.unwrap();
+    let mut upg_sess = upg.upgrade_session();
+    let r = sess_r.read_async().await.unwrap();
+
+    let mut upgrade_fut = Box::pin(upg_sess.upgrade_async().into_future());
+    let first = core::future::poll_fn(|cx| match upgrade_fut.as_mut().poll(cx) {
+        core::task::Poll::Pending => core::task::Poll::Ready(None),
+        core::task::Poll::Ready(v) => core::task::Poll::Ready(Some(v)),
+    })
+    .await;
+    assert!(first.is_none(), "还有别的读者时升级必须排队");
+    // `first` 的类型携带 `upg_sess` 的可变借用，先丢弃它才能交还会话。
+    drop(first);
+
+    let mut probe = lock.acquire_session();
+    assert!(
+        probe.core().writer_queued(),
+        "升级入队必须置位 WRITER_QUEUED"
+    );
+    assert!(probe.try_read().is_err(), "升级排队期间新读者不得插队");
+
+    drop(r);
+    let w = upgrade_fut.await.unwrap();
+    drop(w);
+    drop(upg_sess);
+}
+
+/// 测试取消写者等待会收回 `WRITER_QUEUED`，读者恢复快速路径。
+/// - 手段：主任务持有写锁；spawn 一个写者任务使其入队；丢弃其 `JoinHandle`
+///   让 compio 取消该任务，然后探测标记并释放写锁。
+/// - 判断：取消后 `writer_queued` 为假、`try_read` 成功；若取消不收回标记，
+///   读者会被一个已不存在的等待者永久挡住。
+#[compio::test]
+async fn cancelled_writer_wait_should_release_barrier() {
+    let lock = Arc::new(TestLock::new_owned(0));
+    let mut sess_hold = lock.acquire_session();
+    let hold = sess_hold.try_write().unwrap();
+
+    let l_w = Arc::clone(&lock);
+    let writer = compio::runtime::spawn(async move {
+        let mut s = l_w.acquire_session();
+        let _g = s.write_async().await.unwrap();
+    });
+    let_tasks_settle().await;
+
+    let mut probe = lock.acquire_session();
+    assert!(probe.core().writer_queued(), "写者应已入队并置位");
+
+    drop(writer);
+    let_tasks_settle().await;
+    assert!(
+        !probe.core().writer_queued(),
+        "取消后必须收回 WRITER_QUEUED"
+    );
+
+    drop(hold);
+    assert!(probe.try_read().is_ok(), "取消的写者不应再挡住读者");
+}
+
 /// 测试取消令牌触发时异步获取返回 `Cancelled`，且锁状态保持自洽。
 /// - 手段：持有写守卫，用已取消的 `CancelledToken` 去获取读；随后释放写守卫。
 /// - 判断：获取返回 `Err(Cancelled)`；释放后普通读获取成功。

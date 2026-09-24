@@ -20,8 +20,8 @@
 //!
 //! 因此升级请求直接插到**队首**：可升级读者此刻是持有者，它的"位置"本来
 //! 就在所有排队者之前，升级请求跟着它一起排在前面才是正确顺序。
-//! 插队之后队列非空，`WAITER_QUEUED` 自然挡住新读者，所以升级既不会死锁，
-//! 也不会被新读者无限推迟。
+//! 插队之后该槽位计入 `WRITER_QUEUED`，`WRITER_QUEUED` 自然挡住新读者，
+//! 所以升级既不会死锁，也不会被新读者无限推迟。
 
 use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 use core::{borrow::BorrowMut, task::Waker};
@@ -57,7 +57,23 @@ where
     O: TrCmpxchOrderings,
 {
     stat_: CoopRwState<D, B, O>,
-    queue_: SpinLock<WaitQueue>,
+    queue_: SpinLock<QueuePayload>,
+}
+
+/// 队列自旋锁保护的载荷：FIFO 等待队列 + 队列中独占等待者的计数。
+///
+/// `writer_waiters_` 记录队列中仍处于待决状态（`Waiting` 或 `Admitted`）的
+/// `Write` / `Upgrade` 槽位数，它是状态字里 `WRITER_QUEUED` 位的计数来源。
+/// 之所以必须精确到槽位、而不能用"队列里有没有独占节点"来推导：被取消的独占
+/// 节点可能长期留在队列中段（`prune_front_` 只剪队首），已放行但尚未领取的槽位
+/// 也仍然算在等。
+///
+/// 它与队列共用同一把锁，因此只在持有队列锁时读写。`RwCore` 共享在 `Arc` 里，
+/// 所有入口只拿得到 `&self`，把计数器放进锁内载荷是它唯一不需要 `unsafe` 的
+/// 可变访问路径。
+struct QueuePayload {
+    nodes_: WaitQueue,
+    writer_waiters_: usize,
 }
 
 impl<D, B, O> RwCore<D, B, O>
@@ -69,7 +85,10 @@ where
     pub(super) const fn new(cell: B) -> Self {
         RwCore {
             stat_: CoopRwState::new(cell),
-            queue_: SpinLock::new(VecDeque::new()),
+            queue_: SpinLock::new(QueuePayload {
+                nodes_: VecDeque::new(),
+                writer_waiters_: 0,
+            }),
         }
     }
 
@@ -78,8 +97,22 @@ where
         self.stat_.reader_count()
     }
 
+    /// 队列是否非空（仅供单元测试观测）。
+    #[cfg(test)]
+    #[inline]
+    pub(super) fn waiters_present(&self) -> bool {
+        self.stat_.waiters_present()
+    }
+
+    /// 队列中是否还有待决的写者/升级等待者（仅供单元测试观测）。
+    #[cfg(test)]
+    #[inline]
+    pub(super) fn writer_queued(&self) -> bool {
+        self.stat_.writer_queued()
+    }
+
     //-- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-    // 快速路径：队列为空时无需分配、无需加锁
+    // 快速路径：无写者、且队列里没有写者/升级等待者时无需分配、无需加锁
     //-- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
     #[inline]
@@ -129,13 +162,14 @@ where
         self.prune_front_(&mut q);
         let (node, slot) = self.enqueue_(&mut q, kind);
         // 队列由空变非空只需置位一次；已置位时省掉一次原子读改写。
-        if !self.stat_.waiter_queued() {
-            self.stat_.mark_waiter_queued();
+        if !self.stat_.waiters_present() {
+            self.stat_.mark_waiters_present();
         }
 
         let claimed = self.is_head_(&q, &node) && self.try_claim_(kind);
         if claimed {
             node.mark_acquired(slot);
+            self.note_exclusive_slot_finished_(&mut q, &node);
         } else {
             node.set_waker(slot, waker);
         }
@@ -169,6 +203,7 @@ where
             self.is_head_(&q, node) && self.try_claim_(node.slot_kind(slot));
         if claimed {
             node.mark_acquired(slot);
+            self.note_exclusive_slot_finished_(&mut q, node);
         } else {
             node.set_waker(slot, waker);
         }
@@ -182,18 +217,27 @@ where
     ///
     /// 这一步是**活性所必需**的：队首的等待者被唤醒后立刻取消时，必须由它
     /// 自己重跑一次放行流程，否则排在它后面的等待者将永远无人唤醒。
+    ///
+    /// 对写者/升级槽位还多一层意义：取消必须把该槽位从 `writer_waiters_` 里
+    /// 扣除并收回 `WRITER_QUEUED`，否则后续读者会被一个已经不存在的等待者
+    /// 永久挡在快速路径之外。
     pub(super) fn cancel_wait(&self, node: &Arc<WaitNode>, slot: usize) {
         let mut q = self.queue_.lock();
         node.mark_cancelled(slot);
+        self.note_exclusive_slot_finished_(&mut q, node);
         let wakers = self.pass_(&mut q);
         drop(q);
         Self::wake_wakers_(wakers);
     }
 
-    fn enqueue_(&self, q: &mut WaitQueue, kind: WaitKind) -> (Arc<WaitNode>, usize) {
+    fn enqueue_(
+        &self,
+        q: &mut QueuePayload,
+        kind: WaitKind,
+    ) -> (Arc<WaitNode>, usize) {
         // 读类等待者与队尾的读类节点合并；只与队尾合并，保证 FIFO 次序不被破坏。
         if kind.is_readish()
-            && let Some(tail) = q.back()
+            && let Some(tail) = q.nodes_.back()
             && tail.is_readish()
         {
             let slot = tail.push_readish_slot(kind);
@@ -203,14 +247,49 @@ where
         let node = Arc::new(node);
         match kind {
             // 升级请求插队，理由见本文件头部说明。
-            WaitKind::Upgrade => q.push_front(node.clone()),
-            _ => q.push_back(node.clone()),
+            WaitKind::Upgrade => {
+                q.nodes_.push_front(node.clone());
+                self.note_exclusive_slot_queued_(q);
+            }
+            WaitKind::Write => {
+                q.nodes_.push_back(node.clone());
+                self.note_exclusive_slot_queued_(q);
+            }
+            // 读类等待者新建的读类节点不构成写者屏障。
+            _ => q.nodes_.push_back(node.clone()),
         }
         (node, slot)
     }
 
-    fn is_head_(&self, q: &WaitQueue, node: &Arc<WaitNode>) -> bool {
-        q.front().is_some_and(|f| Arc::ptr_eq(f, node))
+    /// 独占（`Write` / `Upgrade`）槽位入队：计数加一，并在由 0 变 1 时置位。
+    fn note_exclusive_slot_queued_(&self, q: &mut QueuePayload) {
+        q.writer_waiters_ += 1;
+        if q.writer_waiters_ == 1 {
+            self.stat_.mark_writer_queued();
+        }
+    }
+
+    /// 独占槽位离开待决状态（已领取或已取消）：计数减一，归零时清位。
+    ///
+    /// 读类槽位直接返回。判定用 `is_readish()` 而不是重新取槽位种类，是为了
+    /// 避免在已持有队列锁的前提下再去取节点锁。
+    fn note_exclusive_slot_finished_(
+        &self,
+        q: &mut QueuePayload,
+        node: &WaitNode,
+    ) {
+        if node.is_readish() {
+            return;
+        }
+        debug_assert!(q.writer_waiters_ > 0, "writer_waiters_ underflow");
+        q.writer_waiters_ = q.writer_waiters_.saturating_sub(1);
+        if q.writer_waiters_ == 0 {
+            self.stat_.clear_writer_queued();
+        }
+    }
+
+    fn is_head_(&self, q: &QueuePayload, node: &Arc<WaitNode>) -> bool {
+        q.nodes_.front().is_some_and(|f| Arc::ptr_eq(f, node))
     }
 
     //-- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
@@ -218,9 +297,9 @@ where
     //-- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
     /// 剪掉队首已经"没有任何在等的人"的节点。
-    fn prune_front_(&self, q: &mut WaitQueue) {
-        while q.front().is_some_and(|f| f.pending_count() == 0) {
-            q.pop_front();
+    fn prune_front_(&self, q: &mut QueuePayload) {
+        while q.nodes_.front().is_some_and(|f| f.pending_count() == 0) {
+            q.nodes_.pop_front();
         }
     }
 
@@ -236,19 +315,33 @@ where
     ///
     /// 这里**只负责唤醒**，不预先分配任何许可：真正的领取始终由等待者在
     /// `poll` 里自己比较交换完成，因此"被唤醒后立刻取消"不会泄漏许可。
-    fn pass_(&self, q: &mut WaitQueue) -> Vec<Waker> {
+    fn pass_(&self, q: &mut QueuePayload) -> Vec<Waker> {
         self.prune_front_(q);
-        if q.is_empty() {
-            self.stat_.clear_waiter_queued();
+        if q.nodes_.is_empty() {
+            self.stat_.clear_waiters_present();
+            // 防御性：队列已空，就不应再有待决的独占等待者。若这里确实非零，
+            // 说明计数在某条路径上泄漏了；必须清位，否则读者会被永久挡住。
+            if q.writer_waiters_ != 0 {
+                debug_assert!(false, "writer_waiters_ leaked while queue is empty");
+                q.writer_waiters_ = 0;
+                self.stat_.clear_writer_queued();
+            }
             return Vec::new();
         }
 
         let snap = self.stat_.snapshot();
+        // `WRITER_QUEUED` 与计数器都只在队列锁内维护，此处必须一致；
+        // 不一致就说明计数在某条路径上漏加或漏减。
+        debug_assert_eq!(
+            snap.writer_queued,
+            q.writer_waiters_ > 0,
+            "WRITER_QUEUED 与 writer_waiters_ 不一致"
+        );
         if snap.writer_active {
             return Vec::new();
         }
 
-        let Some(front) = q.front() else {
+        let Some(front) = q.nodes_.front() else {
             return Vec::new();
         };
         let mut out = Vec::new();
@@ -280,12 +373,12 @@ where
 
     /// 跑一次放行流程，并在**释放队列锁之后**唤醒收集到的 waker。
     ///
-    /// 先用一次普通原子读避开"没人排队"的常见情形：`WAITER_QUEUED` 只在持有
+    /// 先用一次普通原子读避开"没人排队"的常见情形：`WAITERS_PRESENT` 只在持有
     /// 队列锁时置位/清除，因此它为空就说明队列为空，不必去抢队列锁。
     /// 竞态是无害的：若恰有等待者在我们检查之后入队，它自己的 `acquire`
     /// 会带着刚更新的状态再跑一次放行流程。
     fn run_pass_(&self) {
-        if !self.stat_.waiter_queued() {
+        if !self.stat_.waiters_present() {
             return;
         }
         let mut q = self.queue_.lock();

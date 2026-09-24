@@ -13,32 +13,45 @@ use atomex::{
 };
 
 /// [`CoopRwState`] 的一次性快照，供放行流程做统一判断。
+///
+/// `writer_queued` 只用于测试与 `debug_assert` 观测：放行流程本身不依赖它。
 pub(super) struct CoopRwStateSnapshot<D> {
     pub(super) writer_active: bool,
+    pub(super) writer_queued: bool,
     pub(super) upgrade_active: bool,
     pub(super) reader_count: D,
 }
 
 /// 协作式读写锁的状态字。
 ///
-/// 状态字把一个无符号整数 `D` 切成四个域：
+/// 状态字把一个无符号整数 `D` 切成五个域：
 ///
 /// ```text
 /// bit N-1        WRITER_ACTIVE   写者持有
-/// bit N-2        WAITER_QUEUED   等待队列非空
-/// bit N-3        UPGRADE_ACTIVE  存在可升级读者
-/// bit [0, N-4]   READER_COUNT    读者计数（含可升级读者）
+/// bit N-2        WAITERS_PRESENT 等待队列非空
+/// bit N-3        WRITER_QUEUED   队列中存在写者/升级等待者
+/// bit N-4        UPGRADE_ACTIVE  存在可升级读者
+/// bit [0, N-5]   READER_COUNT    读者计数（含可升级读者）
 /// ```
 ///
-/// `WAITER_QUEUED` 由等待队列的"空 ↔ 非空"翻转来维护，且**只在持有队列锁时**
-/// 更新；快速路径依赖它实现"队列非空即禁止插队"的严格 FIFO 语义。
+/// `WAITERS_PRESENT` 与 `WRITER_QUEUED` 都由等待队列的槽位状态维护，且**只在
+/// 持有队列锁时**更新。两者的分工是：
 ///
-/// # 升级为什么不需要额外的栅栏位
+/// - `WAITERS_PRESENT`（队列非空）只用于 `run_pass_` 的快出口，以及挡住写者、
+///   可升级读者的快速路径；
+/// - `WRITER_QUEUED`（队列里有 `Write`/`Upgrade` 等待者）挡住**普通读者**的
+///   快速路径。
+///
+/// 也就是说：队列里**只有读者**时，新读者仍然可以走无锁快速路径；只有出现写者
+/// 或升级等待者，读者才被挡回队列。这样既避免了"存在一个等待者就放大成所有读者
+/// 都要排队"的开销，又不会让写者/升级被持续到达的读者饿死。
+///
+/// # 升级为什么算栅栏
 ///
 /// 可升级读者的升级条件是"其余读者全部退出"。升级请求本身会进入等待队列
-/// （插在队首，见 `core_`），于是队列非空 → `WAITER_QUEUED` 置位 →
-/// 新读者在快速路径上就被拒绝。所以"升级被新读者无限推迟"这件事
-/// 在 cooperative 里不会发生，不需要 `preemptive` 那种额外的排队标记。
+/// （插在队首，见 `core_`），并计入 `WRITER_QUEUED`，于是新读者在快速路径上
+/// 就被拒绝；既有读者排空后升级必定成功。所以"升级被新读者无限推迟"这件事
+/// 在 cooperative 里不会发生，不需要 `preemptive` 那种队列之外的等待槽。
 ///
 /// # 升级得到的写者如何记账
 ///
@@ -96,20 +109,26 @@ where
 
     #[allow(non_snake_case)]
     #[inline]
-    fn K_WAITER_QUEUED() -> D {
+    fn K_WAITERS_PRESENT() -> D {
         D::ONE << (D::BITS - 2)
     }
 
     #[allow(non_snake_case)]
     #[inline]
-    fn K_UPGRADE_ACTIVE() -> D {
+    fn K_WRITER_QUEUED() -> D {
         D::ONE << (D::BITS - 3)
     }
 
     #[allow(non_snake_case)]
     #[inline]
+    fn K_UPGRADE_ACTIVE() -> D {
+        D::ONE << (D::BITS - 4)
+    }
+
+    #[allow(non_snake_case)]
+    #[inline]
     fn K_MAX_READER_COUNT() -> D {
-        D::MAX >> 3
+        D::MAX >> 4
     }
 
     //-- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
@@ -129,17 +148,30 @@ where
         s & !Self::K_WRITER_ACTIVE()
     }
 
-    fn expect_waiter_queued_(s: D) -> bool {
-        s & Self::K_WAITER_QUEUED() == Self::K_WAITER_QUEUED()
+    fn expect_waiters_present_(s: D) -> bool {
+        s & Self::K_WAITERS_PRESENT() == Self::K_WAITERS_PRESENT()
     }
-    fn expect_no_waiter_queued_(s: D) -> bool {
-        !Self::expect_waiter_queued_(s)
+    fn expect_no_waiters_present_(s: D) -> bool {
+        !Self::expect_waiters_present_(s)
     }
-    fn desire_waiter_queued_(s: D) -> D {
-        s | Self::K_WAITER_QUEUED()
+    fn desire_waiters_present_(s: D) -> D {
+        s | Self::K_WAITERS_PRESENT()
     }
-    fn desire_no_waiter_queued_(s: D) -> D {
-        s & !Self::K_WAITER_QUEUED()
+    fn desire_no_waiters_present_(s: D) -> D {
+        s & !Self::K_WAITERS_PRESENT()
+    }
+
+    fn expect_writer_queued_(s: D) -> bool {
+        s & Self::K_WRITER_QUEUED() == Self::K_WRITER_QUEUED()
+    }
+    fn expect_writer_not_queued_(s: D) -> bool {
+        !Self::expect_writer_queued_(s)
+    }
+    fn desire_writer_queued_(s: D) -> D {
+        s | Self::K_WRITER_QUEUED()
+    }
+    fn desire_writer_not_queued_(s: D) -> D {
+        s & !Self::K_WRITER_QUEUED()
     }
 
     fn expect_upgrade_active_(s: D) -> bool {
@@ -218,8 +250,15 @@ where
     }
 
     #[inline]
-    pub(super) fn waiter_queued(&self) -> bool {
-        Self::expect_waiter_queued_(self.load_state())
+    pub(super) fn waiters_present(&self) -> bool {
+        Self::expect_waiters_present_(self.load_state())
+    }
+
+    /// 队列中是否还有写者/升级等待者（仅供单元测试观测）。
+    #[cfg(test)]
+    #[inline]
+    pub(super) fn writer_queued(&self) -> bool {
+        Self::expect_writer_queued_(self.load_state())
     }
 
     /// 一次性取出放行判定所需的全部信息。
@@ -231,22 +270,33 @@ where
         let s = self.load_state();
         CoopRwStateSnapshot {
             writer_active: Self::expect_writer_active_(s),
+            writer_queued: Self::expect_writer_queued_(s),
             upgrade_active: Self::expect_upgrade_active_(s),
             reader_count: Self::get_reader_count_(s),
         }
     }
 
     //-- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-    // 队列非空标记：调用者必须持有队列锁
+    // 队列标记：调用者必须持有队列锁
     //-- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
-    pub(super) fn mark_waiter_queued(&self) -> bool {
-        self.try_spin_update_(|_| true, Self::desire_waiter_queued_)
+    pub(super) fn mark_waiters_present(&self) -> bool {
+        self.try_spin_update_(|_| true, Self::desire_waiters_present_)
             .is_ok()
     }
 
-    pub(super) fn clear_waiter_queued(&self) -> bool {
-        self.try_spin_update_(|_| true, Self::desire_no_waiter_queued_)
+    pub(super) fn clear_waiters_present(&self) -> bool {
+        self.try_spin_update_(|_| true, Self::desire_no_waiters_present_)
+            .is_ok()
+    }
+
+    pub(super) fn mark_writer_queued(&self) -> bool {
+        self.try_spin_update_(|_| true, Self::desire_writer_queued_)
+            .is_ok()
+    }
+
+    pub(super) fn clear_writer_queued(&self) -> bool {
+        self.try_spin_update_(|_| true, Self::desire_writer_not_queued_)
             .is_ok()
     }
 
@@ -255,6 +305,9 @@ where
     //-- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
     /// 尝试以读者身份直接进入；成功时读者计数加一。
+    ///
+    /// 准入条件是"没有写者持有、队列里没有写者/升级等待者"。**队列里只有读者时
+    /// 仍然放行**——这正是本策略与严格 FIFO 的差别。
     pub(super) fn try_read_fast(&self) -> bool {
         self.try_spin_update_(
             Self::expect_can_read_fast_,
@@ -265,7 +318,7 @@ where
 
     fn expect_can_read_fast_(s: D) -> bool {
         Self::expect_writer_inactive_(s)
-            && Self::expect_no_waiter_queued_(s)
+            && Self::expect_writer_not_queued_(s)
             && Self::expect_reader_lt_max_(s)
     }
 
@@ -280,7 +333,7 @@ where
 
     fn expect_can_write_fast_(s: D) -> bool {
         Self::expect_writer_inactive_(s)
-            && Self::expect_no_waiter_queued_(s)
+            && Self::expect_no_waiters_present_(s)
             && Self::get_reader_count_(s) == D::ZERO
             && Self::expect_upgrade_inactive_(s)
     }
@@ -296,7 +349,7 @@ where
 
     fn expect_can_upgradable_read_fast_(s: D) -> bool {
         Self::expect_writer_inactive_(s)
-            && Self::expect_no_waiter_queued_(s)
+            && Self::expect_no_waiters_present_(s)
             && Self::expect_upgrade_inactive_(s)
             && Self::expect_reader_lt_max_(s)
     }
@@ -312,7 +365,7 @@ where
 
     /// 已被放行的读者尝试真正进入。
     ///
-    /// 与快速路径的差别在于**不检查** `WAITER_QUEUED`：调用者本身就在队列中。
+    /// 与快速路径的差别在于**不检查**两个队列标记：调用者本身就在队列中。
     /// 失败（例如可升级读者已挂起升级栅栏）时调用者应退回等待，
     /// 等待下一次放行。
     pub(super) fn try_read_queued(&self) -> bool {
@@ -461,9 +514,10 @@ where
         let s = self.load_state();
         write!(
             f,
-            "[CoopRwState: W({}), Q({}), U({}), R({})]",
+            "[CoopRwState: W({}), Q({}), WQ({}), U({}), R({})]",
             Self::expect_writer_active_(s),
-            Self::expect_waiter_queued_(s),
+            Self::expect_waiters_present_(s),
+            Self::expect_writer_queued_(s),
             Self::expect_upgrade_active_(s),
             Self::get_reader_count_(s),
         )
@@ -486,14 +540,16 @@ mod tests_ {
 
     /// 测试初始状态字是否为完全空闲。
     /// - 手段：构造一个计数为 0 的 `AtomicUsize` 状态字。
-    /// - 判断：读者计数为 0、三个标志位均为假，且快速路径三种获取全部成功。
+    /// - 判断：读者计数为 0、四个标志位均为假，且快速路径三种获取全部成功。
     #[test]
     fn new_state_should_be_idle() {
         let st = new_state();
         assert_eq!(st.reader_count(), 0);
         assert!(!st.snapshot().writer_active);
         assert!(!st.snapshot().upgrade_active);
-        assert!(!st.waiter_queued());
+        assert!(!st.snapshot().writer_queued);
+        assert!(!st.waiters_present());
+        assert!(!st.writer_queued());
 
         assert!(st.try_read_fast());
         assert!(st.release_reader());
@@ -501,38 +557,91 @@ mod tests_ {
         assert!(st.release_writer());
         assert!(st.try_upgradable_read_fast());
         assert!(st.release_upgradable_read());
-        assert!(!st.waiter_queued());
+        assert!(!st.waiters_present());
+        assert!(!st.writer_queued());
     }
 
-    /// 测试"队列非空即禁止插队"的快速路径语义。
-    /// - 手段：置位 `WAITER_QUEUED` 后分别尝试三种快速获取。
-    /// - 判断：三种快速获取全部失败；清位后又全部恢复成功。
+    /// 测试"队列里只有读者"不再挡住新读者的快速路径。
+    /// - 手段：只置位 `WAITERS_PRESENT`（模拟队列中只有读类等待者），
+    ///   依次尝试三种快速获取，随后清除标记再试。
+    /// - 判断：`try_read_fast` 成功（这是新策略的核心）；写者与可升级读的快速
+    ///   路径仍被队列非空挡住；清位后写者快速路径恢复。
     #[test]
-    fn fast_path_should_reject_when_queue_not_empty() {
+    fn read_fast_path_should_ignore_readers_only_queue() {
         let st = new_state();
-        assert!(st.mark_waiter_queued());
-        assert!(st.waiter_queued());
+        assert!(st.mark_waiters_present());
+        assert!(st.waiters_present());
+        assert!(!st.writer_queued());
 
-        assert!(!st.try_read_fast());
+        assert!(st.try_read_fast(), "只有读者排队时新读者应走快速路径");
+        assert!(st.release_reader());
+
         assert!(!st.try_write_fast());
         assert!(!st.try_upgradable_read_fast());
         assert_eq!(st.reader_count(), 0);
 
-        assert!(st.clear_waiter_queued());
-        assert!(!st.waiter_queued());
+        assert!(st.clear_waiters_present());
+        assert!(!st.waiters_present());
         assert!(st.try_write_fast());
         assert!(st.release_writer());
     }
 
-    /// 测试排队路径不受 `WAITER_QUEUED` 影响。
-    /// - 手段：先置位 `WAITER_QUEUED`（模拟自己正在排队），再依次走排队路径获取
-    ///   读者与可升级读者，最后释放全部读者并获取写者。
+    /// 测试"队列里有写者/升级等待者"会挡住新读者的快速路径。
+    /// - 手段：置位 `WRITER_QUEUED` 后尝试读快速路径，再清位重试。
+    /// - 判断：置位期间 `try_read_fast` 失败且读者计数不变；清位后成功。
+    #[test]
+    fn writer_queued_should_block_read_fast_path() {
+        let st = new_state();
+        assert!(st.mark_writer_queued());
+        assert!(st.writer_queued());
+        assert!(!st.waiters_present());
+
+        assert!(!st.try_read_fast());
+        assert_eq!(st.reader_count(), 0);
+
+        assert!(st.clear_writer_queued());
+        assert!(!st.writer_queued());
+        assert!(st.try_read_fast());
+        assert!(st.release_reader());
+    }
+
+    /// 测试两个队列标记相互独立，且都不会污染读者计数。
+    /// - 手段：先置 `WAITERS_PRESENT`，再叠加 `WRITER_QUEUED`，然后逐个清除。
+    /// - 判断：两个标记的置位/清除互不影响；期间读者计数始终为 0；只有
+    ///   `WRITER_QUEUED` 决定读快速路径的成败。
+    #[test]
+    fn queue_flags_should_be_independent() {
+        let st = new_state();
+        assert!(st.mark_waiters_present());
+        assert!(st.waiters_present());
+        assert!(!st.writer_queued());
+
+        assert!(st.mark_writer_queued());
+        assert!(st.writer_queued());
+
+        assert!(st.clear_waiters_present());
+        assert!(!st.waiters_present());
+        assert!(st.writer_queued(), "清除 WAITERS_PRESENT 不应影响 WRITER_QUEUED");
+        assert_eq!(st.reader_count(), 0);
+        assert!(!st.try_read_fast());
+
+        assert!(st.clear_writer_queued());
+        assert!(!st.writer_queued());
+        assert!(st.try_read_fast());
+        assert!(st.release_reader());
+        assert_eq!(st.reader_count(), 0);
+    }
+
+    /// 测试排队路径不受两个队列标记影响。
+    /// - 手段：先置位 `WAITERS_PRESENT` 与 `WRITER_QUEUED`（模拟自己正在排队），
+    ///   再依次走排队路径获取读者与可升级读者，最后释放全部读者并获取写者。
     /// - 判断：读者与写者的排队获取均成功；读者计数随获取/释放精确增减；
     ///   只要仍有读者，排队写者就必须失败。
     #[test]
-    fn queued_path_should_ignore_waiter_queued_flag() {
+    fn queued_path_should_ignore_queue_flags() {
         let st = new_state();
-        assert!(st.mark_waiter_queued());
+        assert!(st.mark_waiters_present());
+        assert!(st.mark_writer_queued());
 
         assert!(st.try_read_queued());
         assert_eq!(st.reader_count(), 1);

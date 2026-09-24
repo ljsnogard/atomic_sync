@@ -211,3 +211,40 @@ async fn cancelled_wait_should_leave_lock_usable() {
         .unwrap();
     assert_eq!(*got, 5);
 }
+
+/// 测试取消排队写者不会让排在它后面的读者永久阻塞（多线程回归）。
+/// - 手段：写者持锁；spawn 一个写者任务使其入队，再 spawn 一个读者任务排在它后面；
+///   用 `JoinHandle::abort` 取消写者任务（其 future 的 `Drop` 负责收回排队标记），
+///   最后释放写者守卫。
+/// - 判断：读者任务必须在超时内完成并读到正确值——若取消不收回 `WRITER_QUEUED`，
+///   读者会被一个已不存在的写者永久挡在快速路径之外。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelled_writer_should_not_starve_queued_readers() {
+    let lock = Arc::new(TestLock::new_owned(7));
+    let mut sess_hold = lock.acquire_session();
+    let hold = sess_hold.try_write().unwrap();
+
+    let l_w = Arc::clone(&lock);
+    let writer = tokio::spawn(async move {
+        let mut s = l_w.acquire_session();
+        let _g = s.write_async().await.unwrap();
+    });
+    let l_r = Arc::clone(&lock);
+    let reader = tokio::spawn(async move {
+        let mut s = l_r.acquire_session();
+        let g = s.read_async().await.unwrap();
+        *g
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    writer.abort();
+    let _ = writer.await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    drop(hold);
+    let got = tokio::time::timeout(Duration::from_millis(500), reader)
+        .await
+        .expect("写者被取消后读者必须能继续")
+        .unwrap();
+    assert_eq!(got, 7);
+}
