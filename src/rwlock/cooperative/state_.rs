@@ -16,31 +16,29 @@ use atomex::{
 pub(super) struct CoopRwStateSnapshot<D> {
     pub(super) writer_active: bool,
     pub(super) upgrade_active: bool,
-    pub(super) upgrade_waiting: bool,
     pub(super) reader_count: D,
 }
 
 /// 协作式读写锁的状态字。
 ///
-/// 状态字把一个无符号整数 `D` 切成五个域：
+/// 状态字把一个无符号整数 `D` 切成四个域：
 ///
 /// ```text
-/// bit N-1        WRITER_ACTIVE     写者持有
-/// bit N-2        WAITER_QUEUED     等待队列非空
-/// bit N-3        UPGRADE_ACTIVE    存在可升级读者
-/// bit N-4        UPGRADE_WAITING   该可升级读者已挂起升级请求
-/// bit [0, N-5]   READER_COUNT      读者计数（含可升级读者）
+/// bit N-1        WRITER_ACTIVE   写者持有
+/// bit N-2        WAITER_QUEUED   等待队列非空
+/// bit N-3        UPGRADE_ACTIVE  存在可升级读者
+/// bit [0, N-4]   READER_COUNT    读者计数（含可升级读者）
 /// ```
 ///
 /// `WAITER_QUEUED` 由等待队列的"空 ↔ 非空"翻转来维护，且**只在持有队列锁时**
 /// 更新；快速路径依赖它实现"队列非空即禁止插队"的严格 FIFO 语义。
 ///
-/// # 关于 `UPGRADE_WAITING` 栅栏
+/// # 升级为什么不需要额外的栅栏位
 ///
-/// 可升级读者的升级条件是"其余读者全部退出"。若在此期间仍放行新读者，
-/// 升级就可能被源源不断的新读者无限推迟——`preemptive` 版本正有这个隐患。
-/// 因此一旦升级请求挂起就置位该栅栏，读路径（快速与排队两条）都会拒绝，
-/// 保证升级在既有读者排空后必定成功。升级成功或被取消时清位。
+/// 可升级读者的升级条件是"其余读者全部退出"。升级请求本身会进入等待队列
+/// （插在队首，见 `core_`），于是队列非空 → `WAITER_QUEUED` 置位 →
+/// 新读者在快速路径上就被拒绝。所以"升级被新读者无限推迟"这件事
+/// 在 cooperative 里不会发生，不需要 `preemptive` 那种额外的排队标记。
 ///
 /// # 升级得到的写者如何记账
 ///
@@ -111,14 +109,8 @@ where
 
     #[allow(non_snake_case)]
     #[inline]
-    fn K_UPGRADE_WAITING() -> D {
-        D::ONE << (D::BITS - 4)
-    }
-
-    #[allow(non_snake_case)]
-    #[inline]
     fn K_MAX_READER_COUNT() -> D {
-        D::MAX >> 4
+        D::MAX >> 3
     }
 
     //-- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
@@ -164,19 +156,6 @@ where
         s & !Self::K_UPGRADE_ACTIVE()
     }
 
-    fn expect_upgrade_waiting_(s: D) -> bool {
-        s & Self::K_UPGRADE_WAITING() == Self::K_UPGRADE_WAITING()
-    }
-    fn expect_no_upgrade_waiting_(s: D) -> bool {
-        !Self::expect_upgrade_waiting_(s)
-    }
-    fn desire_upgrade_waiting_(s: D) -> D {
-        s | Self::K_UPGRADE_WAITING()
-    }
-    fn desire_no_upgrade_waiting_(s: D) -> D {
-        s & !Self::K_UPGRADE_WAITING()
-    }
-
     fn get_reader_count_(s: D) -> D {
         s & Self::K_MAX_READER_COUNT()
     }
@@ -218,10 +197,10 @@ where
     ///
     /// **保留** `UPGRADE_ACTIVE` 与读者计数：升级得到的写者仍然"代表"那个
     /// 可升级读槽位，槽位要等可升级读守卫自己析构时才归还。这样
-    /// `UpgradeSession` 在升级成功后依然可以 `try_upgrade` 或 `into_guard`，
-    /// 而写者侧只有唯一的一条释放路径。
+    /// `UpgradeSession` 在升级成功后依然可以 `try_upgrade`、`into_guard`，
+    /// 或者再升级一次；而写者侧只有唯一的一条释放路径。
+    /// 写者守卫析构后状态自动"回退"成原来的可升级读者。
     fn desire_upgrade_to_write_(s: D) -> D {
-        let s = Self::desire_no_upgrade_waiting_(s);
         Self::desire_writer_active_(s)
     }
 
@@ -239,12 +218,6 @@ where
         Self::get_reader_count_(self.load_state())
     }
 
-    /// 当前是否满足"升级为写者"的全部条件。
-    #[inline]
-    pub(super) fn can_upgrade_to_write(&self) -> bool {
-        Self::expect_can_upgrade_to_write_(self.load_state())
-    }
-
     #[inline]
     pub(super) fn waiter_queued(&self) -> bool {
         Self::expect_waiter_queued_(self.load_state())
@@ -260,7 +233,6 @@ where
         CoopRwStateSnapshot {
             writer_active: Self::expect_writer_active_(s),
             upgrade_active: Self::expect_upgrade_active_(s),
-            upgrade_waiting: Self::expect_upgrade_waiting_(s),
             reader_count: Self::get_reader_count_(s),
         }
     }
@@ -276,18 +248,6 @@ where
 
     pub(super) fn clear_waiter_queued(&self) -> bool {
         self.try_spin_update_(|_| true, Self::desire_no_waiter_queued_)
-            .is_ok()
-    }
-
-    /// 置位"升级请求在等待"栅栏：此后不再放行新的读者。
-    pub(super) fn mark_upgrade_waiting(&self) -> bool {
-        self.try_spin_update_(|_| true, Self::desire_upgrade_waiting_)
-            .is_ok()
-    }
-
-    /// 撤销"升级请求在等待"栅栏。
-    pub(super) fn clear_upgrade_waiting(&self) -> bool {
-        self.try_spin_update_(|_| true, Self::desire_no_upgrade_waiting_)
             .is_ok()
     }
 
@@ -307,7 +267,6 @@ where
     fn expect_can_read_fast_(s: D) -> bool {
         Self::expect_writer_inactive_(s)
             && Self::expect_no_waiter_queued_(s)
-            && Self::expect_no_upgrade_waiting_(s)
             && Self::expect_reader_lt_max_(s)
     }
 
@@ -366,9 +325,7 @@ where
     }
 
     fn expect_can_read_queued_(s: D) -> bool {
-        Self::expect_writer_inactive_(s)
-            && Self::expect_no_upgrade_waiting_(s)
-            && Self::expect_reader_lt_max_(s)
+        Self::expect_writer_inactive_(s) && Self::expect_reader_lt_max_(s)
     }
 
     /// 已被放行的写者尝试真正进入。
@@ -427,7 +384,6 @@ where
 
     fn desire_release_upgradable_(s: D) -> D {
         let s = Self::desire_upgrade_inactive_(s);
-        let s = Self::desire_no_upgrade_waiting_(s);
         Self::desire_dec_reader_(s)
     }
 
@@ -492,8 +448,7 @@ where
     }
 
     fn desire_downgrade_upgradable_(s: D) -> D {
-        let s = Self::desire_upgrade_inactive_(s);
-        Self::desire_no_upgrade_waiting_(s)
+        Self::desire_upgrade_inactive_(s)
     }
 }
 
@@ -627,28 +582,6 @@ mod tests_ {
         assert_eq!(st.reader_count(), 0);
         assert!(!st.snapshot().upgrade_active);
         assert!(st.try_write_fast(), "state: {st:?}");
-    }
-
-    /// 测试升级请求栅栏会阻止新读者进入，并在升级完成后撤除。
-    /// - 手段：取一个可升级读者后置位 `UPGRADE_WAITING`，再尝试快速读与排队读；
-    ///   随后升级为写者。
-    /// - 判断：栅栏存在期间两种读路径都失败；升级后栅栏被自动清除。
-    #[test]
-    fn upgrade_waiting_barrier_should_block_new_readers() {
-        let st = new_state();
-        assert!(st.try_upgradable_read_fast());
-        assert!(st.mark_upgrade_waiting());
-
-        assert!(!st.try_read_fast());
-        assert!(!st.try_read_queued());
-        assert_eq!(st.reader_count(), 1);
-
-        assert!(st.try_upgrade_to_write());
-        assert!(!st.snapshot().upgrade_waiting);
-        assert!(st.release_writer());
-        assert!(st.release_upgradable_read());
-        assert!(st.try_read_fast());
-        assert!(st.release_reader());
     }
 
     /// 测试可升级读者在还有其他读者时不能升级。

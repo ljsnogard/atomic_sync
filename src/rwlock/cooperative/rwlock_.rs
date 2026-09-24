@@ -237,7 +237,7 @@ where
     #[inline]
     pub fn read_async<'g>(
         &'g mut self,
-    ) -> ReadAcquireAsync<'a, 'g, 'g, T, D, B, O>
+    ) -> ReadAcquireAsync<'a, 'g, T, D, B, O>
     where
         'a: 'g,
     {
@@ -247,7 +247,7 @@ where
     #[inline]
     pub fn write_async<'g>(
         &'g mut self,
-    ) -> WriteAcquireAsync<'a, 'g, 'g, T, D, B, O>
+    ) -> WriteAcquireAsync<'a, 'g, T, D, B, O>
     where
         'a: 'g,
     {
@@ -257,7 +257,7 @@ where
     #[inline]
     pub fn upgradable_read_async<'g>(
         &'g mut self,
-    ) -> UpgradableReadAcquireAsync<'a, 'g, 'g, T, D, B, O>
+    ) -> UpgradableReadAcquireAsync<'a, 'g, T, D, B, O>
     where
         'a: 'g,
     {
@@ -341,7 +341,7 @@ where
         guard: &'u mut UpgradableReaderGuard<'a, 'g, T, D, B, O>,
     ) -> Result<WriterGuard<'a, 'u, T, D, B, O>, CoopRwLockError> {
         let sess = guard.share_mut();
-        if sess.core().try_upgrade_to_write() {
+        if sess.core().try_upgrade_now() {
             Result::Ok(WriterGuard::new(sess))
         } else {
             Result::Err(CoopRwLockError::WouldBlock)
@@ -403,7 +403,7 @@ where
         CooperativeAcqSession::try_upgradable_read(self)
     }
 
-    type ReadAsync<'f> = ReadAcquireAsync<'a, 'f, 'f, T, D, B, O>
+    type ReadAsync<'f> = ReadAcquireAsync<'a, 'f, T, D, B, O>
     where
         'a: 'f;
 
@@ -415,7 +415,7 @@ where
         CooperativeAcqSession::read_async(self)
     }
 
-    type WriteAsync<'f> = WriteAcquireAsync<'a, 'f, 'f, T, D, B, O>
+    type WriteAsync<'f> = WriteAcquireAsync<'a, 'f, T, D, B, O>
     where
         'a: 'f;
 
@@ -427,8 +427,7 @@ where
         CooperativeAcqSession::write_async(self)
     }
 
-    type UpgradableReadAsync<'f> =
-        UpgradableReadAcquireAsync<'a, 'f, 'f, T, D, B, O>
+    type UpgradableReadAsync<'f> = UpgradableReadAcquireAsync<'a, 'f, T, D, B, O>
     where
         'a: 'f;
 

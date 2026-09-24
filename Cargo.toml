@@ -13,10 +13,23 @@ license = "MIT/Apache-2.0"
 [dependencies]
 abs_sync = { git = "https://gitee.com/lino_snsalias/abs_sync.git", branch = "dev/0.3.0" }
 atomex = { git = "https://gitee.com/lino_snsalias/atomex-rs.git", branch = "dev/0.1.2" }
-gen_mcf2 = { git = "https://gitee.com/lino_snsalias/gen_mcf2.rs.git" }
+pin-project = "1"
 
 [dev-dependencies]
 rand = { version = "0.9" }
 futures-lite = { version = "2" }
 env_logger = { version = "0.11.*" }
 log = { version = "0.4.*" }
+# 测试用的真实异步运行时：compio 面向单线程，tokio 支持多线程。
+compio = { version = "0.19.*", features = ["macros", "runtime", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+
+# 两个 bench 都是"自带 main 的测量程序"，必须关掉 libtest harness，
+# 否则 cargo 会用 harness 的 main 顶掉我们自己的 main（表现为 “running 0 tests”）。
+[[bench]]
+name = "mutex_contention"
+harness = false
+
+[[bench]]
+name = "rwlock_cooperative"
+harness = false

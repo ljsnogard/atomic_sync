@@ -59,7 +59,7 @@ impl<T> Deref for SpinLockGuard<'_, T> {
 
     fn deref(&self) -> &Self::Target {
         // SAFETY: 构造 `SpinLockGuard` 的前提是已持有锁，且在守卫析构前
-        // 不会释放，因此这里是该临界区的唯一可变访问路径。
+        // 不会释放，因此这里是该临界区的唯一访问路径。
         unsafe { &*self.lock_.data_.get() }
     }
 }
@@ -78,21 +78,23 @@ impl<T> Drop for SpinLockGuard<'_, T> {
 }
 
 /// 等待者的种类。
-///
-/// `Read` 之间可以同质合并进同一个节点（见 [`WaitNode`]）；其余种类一个
-/// 节点只承载一个槽位，因为它们彼此互斥。
-///
-/// 注意"可升级读者想要升级为写者"不在队列里等待：它由 `RwCore` 单独的一个
-/// waker 槽位承载（全锁至多一个可升级读者，因此至多一个升级等待者）。
-/// 放进 FIFO 队列会和"写者等待 R==0、可升级读者等待队首"互相死锁。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum WaitKind {
     /// 想要获得普通读许可。
     Read,
     /// 想要获得可升级读许可（此时 `UPGRADE_ACTIVE` 尚未置位）。
     UpgradableRead,
+    /// 已持有可升级读许可，想要升级为写者。
+    Upgrade,
     /// 想要获得写许可。
     Write,
+}
+
+impl WaitKind {
+    /// 是否可以与其它读类等待者共处同一个节点。
+    pub(super) fn is_readish(self) -> bool {
+        matches!(self, WaitKind::Read | WaitKind::UpgradableRead)
+    }
 }
 
 /// 单个槽位的状态。
@@ -107,52 +109,78 @@ enum SlotState {
 }
 
 struct WaiterSlot {
+    kind_: WaitKind,
     waker_: Option<Waker>,
     state_: SlotState,
 }
 
 /// 一个等待节点。
 ///
-/// 一个节点可以承载**多个同质的读者**（"同质合并"）：它们共享同一份排队
-/// 位置，`pass()` 一次就唤醒整组。每个槽位独立记录自己的 waker 与状态，
-/// 因此单个等待者的取消只影响它自己的槽位，不会波及同组的其他人。
+/// 两种形态：
 ///
-/// 节点的槽位由自身的自旋锁保护；调用方（`core_`）总是**先持有队列锁、
-/// 再取节点锁**，锁序固定为 `队列锁 → 节点锁`，不会成环。
+/// - **读类节点**（`Read` / `UpgradableRead`）：一个节点承载若干同质等待者，
+///   它们共享同一个排队位置，`pass()` 一次就能放行整组；单个等待者的取消
+///   只影响它自己的槽位，不波及同组其他人；
+/// - **独占节点**（`Write` / `Upgrade`）：只承载一个槽位。
+///
+/// 节点槽位由自身的自旋锁保护；调用方（`core_`）总是**先持有队列锁、再取
+/// 节点锁**，锁序固定为 `队列锁 → 节点锁`，不会成环。
 pub(super) struct WaitNode {
-    kind_: WaitKind,
+    readish_: bool,
     slots_: SpinLock<Vec<WaiterSlot>>,
+}
+
+fn push_slot_into_(slots: &mut Vec<WaiterSlot>, kind: WaitKind) -> usize {
+    slots.push(WaiterSlot {
+        kind_: kind,
+        waker_: None,
+        state_: SlotState::Waiting,
+    });
+    slots.len() - 1
 }
 
 impl WaitNode {
     /// 建立只带一个槽位的新节点，返回 (节点, 槽位下标)。
-    ///
-    /// 该槽位对应 `kind` 自身，因此不受"只有读节点能追加槽位"的限制。
-    pub(super) fn new_with_slot(kind: WaitKind) -> (Self, usize) {
+    pub(super) fn new(kind: WaitKind) -> (Self, usize) {
         let node = WaitNode {
-            kind_: kind,
+            readish_: kind.is_readish(),
             slots_: SpinLock::new(Vec::new()),
         };
         node.slots_.lock().push(WaiterSlot {
+            kind_: kind,
             waker_: None,
             state_: SlotState::Waiting,
         });
         (node, 0)
     }
 
-    pub(super) fn kind(&self) -> WaitKind {
-        self.kind_
+    pub(super) fn is_readish(&self) -> bool {
+        self.readish_
     }
 
-    /// 追加一个槽位；调用者必须持有队列锁，且只有 `Read` 节点允许追加。
-    pub(super) fn push_slot(&self) -> usize {
-        debug_assert!(self.kind_ == WaitKind::Read);
+    /// 指定槽位的种类。
+    pub(super) fn slot_kind(&self, slot: usize) -> WaitKind {
+        self.slots_
+            .lock()
+            .get(slot)
+            .map(|s| s.kind_)
+            .unwrap_or_else(|| {
+                debug_assert!(false, "slot index out of range");
+                WaitKind::Read
+            })
+    }
+
+    /// 独占节点里那个槽位的种类。
+    pub(super) fn solo_kind(&self) -> WaitKind {
+        debug_assert!(!self.readish_);
+        self.slot_kind(0)
+    }
+
+    /// 追加一个读类槽位；调用者必须持有队列锁，且节点必须是读类节点。
+    pub(super) fn push_readish_slot(&self, kind: WaitKind) -> usize {
+        debug_assert!(self.readish_ && kind.is_readish());
         let mut slots = self.slots_.lock();
-        slots.push(WaiterSlot {
-            waker_: None,
-            state_: SlotState::Waiting,
-        });
-        slots.len() - 1
+        push_slot_into_(&mut slots, kind)
     }
 
     /// 记录（或刷新）槽位的 waker。
@@ -162,11 +190,7 @@ impl WaitNode {
             debug_assert!(false, "slot index out of range");
             return;
         };
-        if entry
-            .waker_
-            .as_ref()
-            .is_some_and(|w| w.will_wake(waker))
-        {
+        if entry.waker_.as_ref().is_some_and(|w| w.will_wake(waker)) {
             return;
         }
         entry.waker_ = Some(waker.clone());
@@ -205,16 +229,21 @@ impl WaitNode {
             .count()
     }
 
-    /// 把本节点所有 `Waiting` 槽位的 waker 克隆收集到 `out`。
-    pub(super) fn collect_waiting_wakers(&self, out: &mut Vec<Waker>) {
+    /// 依次访问本节点中仍处于 `Waiting` 的槽位。
+    pub(super) fn for_each_waiting_slot(&self, mut f: impl FnMut(WaitKind, &Waker)) {
         let slots = self.slots_.lock();
         for s in slots.iter() {
             if s.state_ == SlotState::Waiting
                 && let Some(w) = s.waker_.as_ref()
             {
-                out.push(w.clone());
+                f(s.kind_, w);
             }
         }
+    }
+
+    /// 把本节点所有 `Waiting` 槽位的 waker 克隆收集到 `out`。
+    pub(super) fn collect_waiting_wakers(&self, out: &mut Vec<Waker>) {
+        self.for_each_waiting_slot(|_, w| out.push(w.clone()));
     }
 }
 
