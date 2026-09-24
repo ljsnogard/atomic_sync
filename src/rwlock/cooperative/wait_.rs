@@ -102,10 +102,22 @@ impl WaitKind {
 enum SlotState {
     /// 仍在等待放行。
     Waiting,
+    /// 已被放行（waker 已交出），但还没被 poll 到、也就还没领取许可。
+    ///
+    /// 这个状态是"不重复唤醒"的关键：`pass_` 只放行 `Waiting` 槽位，
+    /// 一个槽位在被真正 poll（领取成功或失败后重新挂起）之前不会再被唤醒。
+    Admitted,
     /// 已被放行并成功领取许可。
     Acquired,
     /// 等待者被取消（future 被丢弃）。
     Cancelled,
+}
+
+impl SlotState {
+    /// 是否仍占用排队位置（尚未有最终结果）。
+    fn is_pending(self) -> bool {
+        matches!(self, SlotState::Waiting | SlotState::Admitted)
+    }
 }
 
 struct WaiterSlot {
@@ -183,13 +195,17 @@ impl WaitNode {
         push_slot_into_(&mut slots, kind)
     }
 
-    /// 记录（或刷新）槽位的 waker。
+    /// 记录（或刷新）槽位的 waker，并把它重新置回 `Waiting`。
+    ///
+    /// 被唤醒却没能领到许可的等待者会走这里：它必须回到 `Waiting`，
+    /// 下一次 `pass_` 才会再次放行它。
     pub(super) fn set_waker(&self, slot: usize, waker: &Waker) {
         let mut slots = self.slots_.lock();
         let Some(entry) = slots.get_mut(slot) else {
             debug_assert!(false, "slot index out of range");
             return;
         };
+        entry.state_ = SlotState::Waiting;
         if entry.waker_.as_ref().is_some_and(|w| w.will_wake(waker)) {
             return;
         }
@@ -212,38 +228,44 @@ impl WaitNode {
             debug_assert!(false, "slot index out of range");
             return;
         };
-        debug_assert!(entry.state_ == SlotState::Waiting);
+        debug_assert!(entry.state_.is_pending());
         entry.state_ = state;
         // 一旦离开 `Waiting`，waker 就没有保留价值了。
         entry.waker_ = None;
     }
 
-    /// 仍处于 [`SlotState::Waiting`] 的槽位数量。
+    /// 仍未得出结果（`Waiting` 或 `Admitted`）的槽位数量。
     ///
     /// 该值为 0 时，节点的排队位置可以被回收（`pass()` 会把它从队首剪掉）。
     pub(super) fn pending_count(&self) -> usize {
         self.slots_
             .lock()
             .iter()
-            .filter(|s| s.state_ == SlotState::Waiting)
+            .filter(|s| s.state_.is_pending())
             .count()
     }
 
-    /// 依次访问本节点中仍处于 `Waiting` 的槽位。
-    pub(super) fn for_each_waiting_slot(&self, mut f: impl FnMut(WaitKind, &Waker)) {
-        let slots = self.slots_.lock();
-        for s in slots.iter() {
+    /// 放行本节点中"仍在 `Waiting` 且 `allow(kind)` 成立"的槽位。
+    ///
+    /// 被放行的槽位转入 `Admitted` 并**交出** waker，因此同一个槽位在它自己
+    /// 重新挂起（`set_waker`）之前不会再被放行——这正是避免"每次 `pass_` 都
+    /// 把同一批等待者重新唤醒一遍"的关键。反复唤醒会让每次操作付出多次
+    /// 跨线程调度，是 8 线程下性能崩塌的主因。
+    pub(super) fn admit_waiting(
+        &self,
+        out: &mut Vec<Waker>,
+        mut allow: impl FnMut(WaitKind) -> bool,
+    ) {
+        let mut slots = self.slots_.lock();
+        for s in slots.iter_mut() {
             if s.state_ == SlotState::Waiting
-                && let Some(w) = s.waker_.as_ref()
+                && allow(s.kind_)
+                && let Some(w) = s.waker_.take()
             {
-                f(s.kind_, w);
+                s.state_ = SlotState::Admitted;
+                out.push(w);
             }
         }
-    }
-
-    /// 把本节点所有 `Waiting` 槽位的 waker 克隆收集到 `out`。
-    pub(super) fn collect_waiting_wakers(&self, out: &mut Vec<Waker>) {
-        self.for_each_waiting_slot(|_, w| out.push(w.clone()));
     }
 }
 

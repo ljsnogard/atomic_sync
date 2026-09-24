@@ -72,8 +72,7 @@ where
     D: TrAtomicData + Unsigned,
     B: BorrowMut<<D as TrAtomicData>::AtomicCell>,
     O: TrCmpxchOrderings,
-{
-}
+{}
 
 impl<D, B, O> CoopRwState<D, B, O>
 where

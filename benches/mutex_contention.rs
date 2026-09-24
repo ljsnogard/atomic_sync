@@ -1,3 +1,13 @@
+//! **注意：本 bench 默认不会运行。**
+//!
+//! 它没有在 `Cargo.toml` 里声明 `harness = false`，所以
+//! `cargo bench --bench mutex_contention` 实际走的是 libtest harness，
+//! 输出为 `running 0 tests`，下面的 `main` **不会**被执行。
+//!
+//! 这是有意为之：本文件是 2,000,000 次操作 × 3 轮 × 6 种线程数 × 3 个实现的
+//! 重量级测量，不适合默认跑。需要它时，在 `Cargo.toml` 里取消注释
+//! `[[bench]] name = "mutex_contention" harness = false` 即可。
+//!
 //! Contention benchmark: `mutex::preemptive::SpinningMutex` vs
 //! `std::sync::Mutex`, with 3 to 8 threads hammering a shared counter.
 //!

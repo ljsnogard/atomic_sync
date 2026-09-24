@@ -141,7 +141,7 @@ where
         }
         let wakers = self.pass_(&mut q);
         drop(q);
-        Self::wake_wakers_(wakers, Some(waker));
+        Self::wake_wakers_(wakers);
 
         if claimed {
             AcqProgress::Acquired
@@ -174,7 +174,7 @@ where
         }
         let wakers = self.pass_(&mut q);
         drop(q);
-        Self::wake_wakers_(wakers, Some(waker));
+        Self::wake_wakers_(wakers);
         claimed
     }
 
@@ -187,7 +187,7 @@ where
         node.mark_cancelled(slot);
         let wakers = self.pass_(&mut q);
         drop(q);
-        Self::wake_wakers_(wakers, None);
+        Self::wake_wakers_(wakers);
     }
 
     fn enqueue_(&self, q: &mut WaitQueue, kind: WaitKind) -> (Arc<WaitNode>, usize) {
@@ -254,23 +254,23 @@ where
         let mut out = Vec::new();
         if front.is_readish() {
             let mut upgrade_taken = snap.upgrade_active;
-            front.for_each_waiting_slot(|kind, waker| match kind {
-                WaitKind::Read => out.push(waker.clone()),
+            front.admit_waiting(&mut out, |kind| match kind {
+                WaitKind::Read => true,
                 WaitKind::UpgradableRead if !upgrade_taken => {
-                    out.push(waker.clone());
                     upgrade_taken = true;
+                    true
                 }
-                _ => {}
+                _ => false,
             });
         } else {
             match front.solo_kind() {
                 WaitKind::Write
                     if snap.reader_count == D::ZERO && !snap.upgrade_active =>
                 {
-                    front.collect_waiting_wakers(&mut out);
+                    front.admit_waiting(&mut out, |_| true);
                 }
                 WaitKind::Upgrade if snap.reader_count == D::ONE => {
-                    front.collect_waiting_wakers(&mut out);
+                    front.admit_waiting(&mut out, |_| true);
                 }
                 _ => {}
             }
@@ -291,14 +291,19 @@ where
         let mut q = self.queue_.lock();
         let wakers = self.pass_(&mut q);
         drop(q);
-        Self::wake_wakers_(wakers, None);
+        Self::wake_wakers_(wakers);
     }
 
-    fn wake_wakers_(wakers: Vec<Waker>, skip: Option<&Waker>) {
+    /// 唤醒收集到的 waker。
+    ///
+    /// 这里**不**过滤"自己的 waker"。曾经为了让入队者少一次自我唤醒而加过
+    /// `will_wake` 过滤，但配合"槽位放行后转入 `Admitted` 且交出 waker"的
+    /// 一次性放行语义，过滤会把这个槽位**唯一**的唤醒机会吞掉：
+    /// 本线程在临界区内看到条件成立而放行了自己，却因为"目的就是自己"
+    /// 而不唤醒，从此没有任何人再唤醒它 → 永久挂起。
+    /// 多一次自我唤醒最多多一次 poll，代价远小于丢失唤醒。
+    fn wake_wakers_(wakers: Vec<Waker>) {
         for w in wakers {
-            if skip.is_some_and(|s| s.will_wake(&w)) {
-                continue;
-            }
             w.wake();
         }
     }

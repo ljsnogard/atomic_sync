@@ -7,6 +7,7 @@ mod upgrade_;
 #[cfg(test)]
 mod tests_;
 
+pub use error_::RwLockError;
 pub use rwlock_::{
     AcqSession, SpinningRwLock, SpinningRwLockBorrowed, SpinningRwLockOwned,
 };

@@ -24,12 +24,20 @@ log = { version = "0.4.*" }
 compio = { version = "0.19.*", features = ["macros", "runtime", "time"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 
-# 两个 bench 都是"自带 main 的测量程序"，必须关掉 libtest harness，
+# bench 都是"自带 main 的测量程序"。要真正跑起来必须关掉 libtest harness，
 # 否则 cargo 会用 harness 的 main 顶掉我们自己的 main（表现为 “running 0 tests”）。
-[[bench]]
-name = "mutex_contention"
-harness = false
-
+#
+# - `rwlock_cooperative`：默认就跑；规模可用环境变量调小
+#   （`RWLOCK_BENCH_OPS` / `RWLOCK_BENCH_ROUNDS` / `RWLOCK_BENCH_COMPETITORS`）。
+# - `mutex_contention`：**故意保持不运行**。它是 2,000,000 次操作 × 3 轮 ×
+#   6 种线程数 × 3 个实现的重量级测量，一次跑完需要很久；这里保留它作为
+#   可手动启用的参考实现，而不让 `cargo bench` 默认把它拖起来。
+#   需要时把下面两行取消注释即可：
+#
+#   [[bench]]
+#   name = "mutex_contention"
+#   harness = false
+#
 [[bench]]
 name = "rwlock_cooperative"
 harness = false
